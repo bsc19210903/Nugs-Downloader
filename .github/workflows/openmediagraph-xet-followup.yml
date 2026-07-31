@@ -1,0 +1,152 @@
+name: OpenMediaGraph Xet endpoint follow-up
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/openmediagraph-xet-followup.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  xet-cache-canary:
+    name: Verify real Xet transfer and chunk-cache behavior
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: ${{ runner.temp }}/omg-xet/hf-home
+      HF_HUB_CACHE: ${{ runner.temp }}/omg-xet/hub-cache
+      HF_XET_CACHE: ${{ runner.temp }}/omg-xet/xet-cache
+      HF_XET_LOG_DEST: ${{ runner.temp }}/omg-xet/xet-logs/
+      HF_XET_LOG_FORMAT: json
+      HF_XET_LOG_DIR_DISABLE_CLEANUP: "1"
+      HF_XET_CHUNK_CACHE_SIZE_BYTES: "1000000000"
+      RUST_LOG: info
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.12.10"
+
+      - name: Install Xet client and measurement dependency
+        run: python -m pip install --disable-pip-version-check --no-cache-dir "huggingface_hub>=1.1,<2" "hf_xet>=1.1,<2" "psutil>=6,<8"
+
+      - name: Run cache-isolation canary
+        run: |
+          mkdir -p "${HF_HUB_CACHE}" "${HF_XET_CACHE}" "${HF_XET_LOG_DEST}" openmediagraph-xet-results
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import shutil
+          import time
+          from pathlib import Path
+
+          import psutil
+          from huggingface_hub import HfApi, hf_hub_download
+          import hf_xet
+
+          repo_id = "hf-internal-testing/librispeech_asr_dummy"
+          filename = "clean/validation-00000-of-00001.parquet"
+          revision = "5be91486e11a2d616f4ec5db8d3fd248585ac07a"
+          hub_cache = Path(os.environ["HF_HUB_CACHE"])
+          xet_cache = Path(os.environ["HF_XET_CACHE"])
+          log_dir = Path(os.environ["HF_XET_LOG_DEST"])
+          out = Path("openmediagraph-xet-results")
+
+          def tree_stats(root: Path) -> dict[str, int]:
+              files = [p for p in root.rglob("*") if p.is_file()] if root.exists() else []
+              return {"files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+
+          def log_stats() -> dict[str, object]:
+              files = [p for p in log_dir.rglob("*") if p.is_file()] if log_dir.exists() else []
+              text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
+              lowered = text.lower()
+              patterns = {key: lowered.count(key) for key in ("xet", "cas", "xorb", "range", "chunk", "reconstruction", "cache")}
+              return {"files": len(files), "bytes": sum(p.stat().st_size for p in files), "patterns": patterns}
+
+          def download(label: str) -> dict[str, object]:
+              before = psutil.net_io_counters()
+              started = time.perf_counter()
+              path = Path(hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset", revision=revision, cache_dir=hub_cache))
+              elapsed = time.perf_counter() - started
+              after = psutil.net_io_counters()
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              return {
+                  "label": label,
+                  "elapsed_seconds": elapsed,
+                  "payload_bytes": path.stat().st_size,
+                  "sha256": digest,
+                  "network_received_delta": after.bytes_recv - before.bytes_recv,
+                  "network_sent_delta": after.bytes_sent - before.bytes_sent,
+                  "hub_cache": tree_stats(hub_cache),
+                  "xet_cache": tree_stats(xet_cache),
+                  "xet_logs": log_stats(),
+              }
+
+          info = HfApi().dataset_info(repo_id, revision=revision, files_metadata=True)
+          sibling = next(item for item in info.siblings if item.rfilename == filename)
+          xet_metadata = getattr(sibling, "xet_file_data", None)
+
+          cold_a = download("cold_a_empty_hub_and_xet_cache")
+          warm = download("warm_same_hub_cache")
+
+          # Force reconstruction again while preserving only the Xet chunk cache.
+          shutil.rmtree(hub_cache)
+          hub_cache.mkdir(parents=True, exist_ok=True)
+          cold_b = download("cold_b_empty_hub_preserved_xet_cache")
+
+          hashes_equal = len({cold_a["sha256"], warm["sha256"], cold_b["sha256"]}) == 1
+          patterns = cold_b["xet_logs"]["patterns"]
+          endpoint_evidence = bool(xet_metadata) and any(patterns[key] > 0 for key in ("cas", "xorb", "range", "reconstruction"))
+          result = {
+              "schema_version": "openmediagraph.xet-followup.v1",
+              "repository": repo_id,
+              "revision": revision,
+              "filename": filename,
+              "hf_xet_version": getattr(hf_xet, "__version__", "unknown"),
+              "xet_metadata_present": bool(xet_metadata),
+              "xet_file_hash": getattr(xet_metadata, "file_hash", None) if xet_metadata else None,
+              "cold_a": cold_a,
+              "warm": warm,
+              "cold_b": cold_b,
+              "hashes_equal": hashes_equal,
+              "warm_speedup": cold_a["elapsed_seconds"] / max(warm["elapsed_seconds"], 1e-9),
+              "preserved_chunk_cache_speedup": cold_a["elapsed_seconds"] / max(cold_b["elapsed_seconds"], 1e-9),
+              "preserved_chunk_cache_network_ratio": cold_b["network_received_delta"] / max(cold_a["network_received_delta"], 1),
+              "xet_endpoint_evidence": endpoint_evidence,
+              "scope_boundary": "Read-only download/cache canary. No authenticated upload, server-side deduplication accounting, xorb storage billing, or cross-tenant savings measurement.",
+          }
+          (out / "XET_FOLLOWUP.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps({
+              "hashes_equal": hashes_equal,
+              "xet_metadata_present": bool(xet_metadata),
+              "xet_endpoint_evidence": endpoint_evidence,
+              "warm_speedup": result["warm_speedup"],
+              "preserved_chunk_cache_speedup": result["preserved_chunk_cache_speedup"],
+              "preserved_chunk_cache_network_ratio": result["preserved_chunk_cache_network_ratio"],
+          }, indent=2))
+          if not hashes_equal:
+              raise SystemExit("payload hashes differed")
+          if not xet_metadata:
+              raise SystemExit("selected file was not reported as Xet-backed")
+          PY
+
+      - name: Verify evidence custody
+        run: |
+          test -s openmediagraph-xet-results/XET_FOLLOWUP.json
+          test "$(find openmediagraph-xet-results -type f | wc -l)" -eq 1
+
+      - name: Upload Xet evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openmediagraph-xet-followup
+          path: openmediagraph-xet-results/
+          if-no-files-found: error
+          retention-days: 14
