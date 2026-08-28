@@ -1,0 +1,23 @@
+('acma_sspz_2025','Asia / Pacific','Australia','ACMA Southern Sydney Protection Zone 2025 Variation','Permit/protection-zone variation','Australian Communications and Media Authority','https://www.acma.gov.au/sites/default/files/2025-05/Spatial%20data%20download%20proposed%20SSPZ%20variation.zip'),
+('iotc_eez_highseas','International Waters — Indian Ocean','IOTC Area','IOTC EEZ and High-Seas Areas','EEZ/high-seas reference areas','IOTC Secretariat','https://iotc.org/sites/default/files/documents/2018/03/IOTC-2018-TCAC04-DATA05_-_EEZ_shapefile.zip'),
+]
+
+ARCGIS=[
+('nz_commercial','Asia / Pacific','New Zealand','NZ Commercial Fishing Restrictions','Fishing restrictions','New Zealand MPI','https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_Restrictions_CommercialFishingRegulations/MapServer',r'prohibit|closed|closure|benthic|seamount|trawl|submarine|cable|pipeline|protected'),
+('nz_lines','Asia / Pacific','New Zealand','NZ Commercial Fishing Restriction Lines','Fishing restriction boundaries','New Zealand MPI','https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_Restrictions_CommercialFishingRegulations_Polyline/MapServer',r'trawl|closed|closure|cable|pipeline|prohibit'),
+('nz_customary','Asia / Pacific','New Zealand','NZ Customary Fishing Areas','Customary fisheries areas','New Zealand MPI','https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_RestrictionsCustomary/MapServer',r'mataitai|taiapure|custom|reserve|closure'),
+('au_epbc','Asia / Pacific','Australia','Australian EPBC Cable and Interconnector Referrals','Environmental permit/referral footprints','Australian Government DCCEEW','https://gis.environment.gov.au/gispubmap/rest/services/ogc_services/EPBC_Referrals/MapServer',r'.*'),
+('za_cables','Africa','South Africa','South Africa Submarine Telecommunications Cables','Submarine cable routes','South Africa DFFE','https://screening.environment.gov.za/server/rest/services/OC_MSP/3_02_NDIR_Infrastructure/MapServer',r'cable|telecom'),
+('za_eia_cables','Africa','South Africa','South Africa EIA Submarine Cable Development Footprints','Environmental application and development footprints','South Africa DFFE','https://portal.environment.gov.za/server/rest/services/ScreeningMaps/Screening_Site/MapServer',r'EIA Application Site|EIA Application Development Footprint'),
+('cl_amerb_decreed','South America','Chile','Chile Decreed Benthic Resource Management Areas','Legally decreed artisanal fisheries management areas','Chile SUBPESCA','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer',r'Decretadas'),
+('cl_amerb_requested','South America','Chile','Chile Requested Benthic Resource Management Areas','Requested artisanal fisheries management areas','Chile SUBPESCA','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer',r'Solicitadas|Solicitud'),
+('cl_amerb_rejected','South America','Chile','Chile Rejected Benthic Resource Management Applications','Rejected artisanal fisheries management applications','Chile SUBPESCA','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer',r'Rechazadas|Rechazada'),
+]
+
+PERMITS=[
+{'jurisdiction':'Hong Kong','project':'SEA-H2X','permit':'EP-661/2025','url':'https://www.epd.gov.hk/eia/files/applications/en/pp_937/aep_6064/progress/action_180045/ep_661/EP_661_2025.html','status':'permitted alignment in Figure 1; as-built coordinate plans required after installation'},
+{'jurisdiction':'Hong Kong','project':'Sihanoukville-Hong Kong','permit':'EP-657/2025','url':'https://www.epd.gov.hk/eia/files/applications/en/pp_928/aep_5950/progress/action_167227/ep6572025.htm','status':'permitted 35 km alignment; as-built coordinate plans required'},
+{'jurisdiction':'Hong Kong','project':'ALC-HK Cable Bundle','permit':'EP-659/2025','url':'https://www.epd.gov.hk/eia/files/applications/en/pp_931/aep_5962/progress/action_169495/ep6592025.htm','status':'permitted 37 km alignment; figure-only route pending coordinate publication'},
+{'jurisdiction':'Hong Kong','project':'CCE Hong Kong Bundle','permit':'EP-682/2026','url':'https://www.epd.gov.hk/eia/files/applications/en/pp_1013/aep_6394/progress/action_179996/EP_682_2026/EP_682_2026.htm','status':'permitted 35 km alignment; figure-only route pending coordinate publication'},
+{'jurisdiction':'Spain','project':'MAREA','permit':'BOE-B-2017-40592','url':'https://www.boe.es/diario_boe/txt.php?id=BOE-B-2017-40592','status':'coastal concession; route coordinates not in public one-page notice'},
+{'jurisdiction':'Malaysia','project':'SEA-ME-WE 6','permit':'NTM 245(T)/2025','url':'https://www.marine.gov.my/elementor-34322/','status':'installation notice; parser attempts route-coordinate extraction'},

@@ -30,7 +30,7 @@ jobs:
       - name: Restore and verify deep converter
         run: |
           set -euo pipefail
-          gzip -dc tools/global_deep/deep_supplement.py.gz > /tmp/deep_supplement.py
+          cat tools/global_deep/deep_supplement.part* > /tmp/deep_supplement.py
           echo '5108edf6556e364415430f6d499bf29b3c03ed6a2ab638b8b7c58ff9677c39a8  /tmp/deep_supplement.py' | sha256sum -c --strict
           python -m py_compile /tmp/deep_supplement.py
       - name: Acquire permit, route-position and international-waters data

@@ -1,0 +1,102 @@
+{'jurisdiction':'Malaysia','project':'ALC','permit':'NTM 82(T)/2026','url':'https://www.marine.gov.my/elementor-34322/','status':'main-lay notice; parser attempts route-coordinate extraction'},
+{'jurisdiction':'Malaysia','project':'SEA-H2X','permit':'NTM 57(T)/2025','url':'https://www.marine.gov.my/elementor-34322/','status':'route survey notice; parser attempts coordinate extraction'},
+]
+
+def now(): return datetime.now(timezone.utc).isoformat()
+def sess():
+ s=requests.Session(); s.headers.update({'User-Agent':UA}); return s
+
+def dl(s,url,path,timeout=300):
+ r=s.get(url,timeout=timeout,allow_redirects=True); r.raise_for_status(); path.write_bytes(r.content); return r
+
+def normalize_gdf(gdf):
+ if gdf.empty:return gdf
+ if gdf.crs is None:
+  b=gdf.total_bounds
+  if -181<=b[0]<=181 and -91<=b[1]<=91 and -181<=b[2]<=181 and -91<=b[3]<=91:gdf=gdf.set_crs(4326)
+  else: raise ValueError(f'missing CRS with implausible bounds {b}')
+ gdf=gdf.to_crs(4326)
+ gdf=gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+ gdf['geometry']=gdf.geometry.apply(lambda g: make_valid(g) if not g.is_valid else g)
+ return gdf.explode(index_parts=False,ignore_index=True)
+
+def read_archive(path,tmp):
+ out=[]
+ d=tmp/path.stem; d.mkdir(parents=True,exist_ok=True)
+ if zipfile.is_zipfile(path):
+  with zipfile.ZipFile(path) as z:z.extractall(d)
+ else: subprocess.run(['7z','x','-y',str(path),f'-o{d}'],check=True,stdout=subprocess.DEVNULL)
+ for p in d.rglob('*'):
+  if p.suffix.lower() in {'.shp','.gpkg','.geojson','.json','.kml'}:
+   try:
+    if p.suffix.lower()=='.kml': continue
+    if p.suffix.lower()=='.gpkg':
+     import pyogrio
+     for lyr in pyogrio.list_layers(p)[:,0]: out.append((f'{p.name}:{lyr}',normalize_gdf(gpd.read_file(p,layer=lyr))))
+    else: out.append((p.name,normalize_gdf(gpd.read_file(p))))
+   except Exception: pass
+ return [(n,g) for n,g in out if not g.empty]
+
+def arcgis_layers(s,root,pattern):
+ meta=s.get(root,params={'f':'json'},timeout=120).json(); rx=re.compile(pattern,re.I); out=[]
+ for x in meta.get('layers',[]):
+  name=str(x.get('name','')); lid=x.get('id')
+  if lid is not None and rx.search(name): out.append((lid,name))
+ return out
+
+def arcgis_gdf(s,url,where='1=1'):
+ meta=s.get(url,params={'f':'json'},timeout=120).json()
+ if meta.get('error'):raise RuntimeError(meta['error'])
+ step=min(int(meta.get('maxRecordCount') or 1000),1000)
+ oid=meta.get('objectIdField') or meta.get('objectIdFieldName')
+ if not oid:
+  for f in meta.get('fields',[]):
+   if f.get('type')=='esriFieldTypeOID':oid=f.get('name');break
+ feats=[];offset=0
+ # Prefer offset pagination. It avoids long objectIds URLs and works with
+ # qualified Oracle field names used by Chile SUBPESCA.
+ while True:
+  q={'f':'geojson','where':where,'outFields':'*','returnGeometry':'true','outSR':4326,'resultOffset':offset,'resultRecordCount':step}
+  if oid:q['orderByFields']=oid
+  r=s.get(url+'/query',params=q,timeout=300)
+  if r.status_code>=400:break
+  try:j=r.json()
+  except Exception:break
+  if j.get('error'):break
+  batch=j.get('features') or []
+  feats.extend(batch)
+  exceeded=bool(j.get('exceededTransferLimit'))
+  if not batch or (len(batch)<step and not exceeded):break
+  offset+=len(batch)
+  if offset>1000000:raise RuntimeError('ArcGIS pagination safety limit reached')
+ if not feats:
+  ids_resp=s.get(url+'/query',params={'f':'json','where':where,'returnIdsOnly':'true'},timeout=180)
+  idsj=ids_resp.json() if ids_resp.status_code<400 else {}
+  ids=idsj.get('objectIds') or []
+  for i in range(0,len(ids),200):
+   q={'f':'geojson','objectIds':','.join(map(str,ids[i:i+200])),'outFields':'*','returnGeometry':'true','outSR':4326}
+   r=s.get(url+'/query',params=q,timeout=300)
+   if r.status_code>=400:raise RuntimeError(f'ArcGIS query failed HTTP {r.status_code}: {r.url}')
+   j=r.json()
+   if j.get('error'):raise RuntimeError(j['error'])
+   feats.extend(j.get('features') or [])
+ return normalize_gdf(gpd.GeoDataFrame.from_features(feats,crs=4326)) if feats else gpd.GeoDataFrame(geometry=[],crs=4326)
+
+def geom_vertices(g):
+ if g.geom_type=='Point':return 1
+ if g.geom_type in ('LineString','LinearRing'):return len(g.coords)
+ if g.geom_type=='Polygon':return len(g.exterior.coords)+sum(len(r.coords) for r in g.interiors)
+ if hasattr(g,'geoms'):return sum(geom_vertices(x) for x in g.geoms)
+ return 0
+
+def add(parent,tag,text=None,**attrs):
+ e=etree.SubElement(parent,K+tag,**attrs)
+ if text is not None:e.text=str(text)
+ return e
+
+def coords(seq):return ' '.join(f'{x:.7f},{y:.7f},0' for x,y,*_ in seq)
+def add_geom(parent,g):
+ t=g.geom_type
+ if t=='Point': p=add(parent,'Point'); add(p,'coordinates',f'{g.x:.7f},{g.y:.7f},0')
+ elif t=='LineString': p=add(parent,'LineString');add(p,'tessellate','1');add(p,'coordinates',coords(g.coords))
+ elif t=='Polygon':

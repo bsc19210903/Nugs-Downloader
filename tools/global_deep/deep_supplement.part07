@@ -1,0 +1,15 @@
+ val={'xml_parse_ok':True,'placemarks':len(pms),'networklinks':len(nls),'networklinks_zero':not nls,'coordinate_vertices':verts,'invalid_coordinate_tokens':bad,'coordinates_valid':bad==0,'kml_sha256':hashlib.sha256(kml.read_bytes()).hexdigest(),'kmz_sha256':hashlib.sha256(kmz.read_bytes()).hexdigest()}
+ (a.out/'global_deep_supplement_validation.json').write_text(json.dumps(val,indent=2))
+ ledger={'generated_at':now(),'summary':{'sources':len(results),'embedded':sum(x.status=='embedded' for x in results),'features':sum(x.features for x in results),'vertices':sum(x.vertices for x in results)},'validation':val,'sources':[asdict(x) for x in results],'permit_research_index':PERMITS}
+ (a.out/'global_deep_supplement_ledger.json').write_text(json.dumps(ledger,indent=2,ensure_ascii=False))
+ with (a.out/'global_deep_supplement_ledger.csv').open('w',newline='',encoding='utf-8') as fh:
+  w=csv.DictWriter(fh,fieldnames=list(SourceResult.__dataclass_fields__));w.writeheader()
+  for x in results:
+   d=asdict(x)
+   for k,v in d.items():
+    if isinstance(v,(list,dict)):d[k]=json.dumps(v,ensure_ascii=False)
+   w.writerow(d)
+ (a.out/'global_deep_supplement_summary.txt').write_text(f"Sources embedded: {ledger['summary']['embedded']} / {len(results)}\nFeatures: {ledger['summary']['features']}\nVertices: {ledger['summary']['vertices']}\nNetworkLinks: {val['networklinks']}\n")
+ print(json.dumps(ledger['summary'],indent=2));print(json.dumps(val,indent=2))
+
+if __name__=='__main__':main()

@@ -1,0 +1,38 @@
+ line('Submarine cable chart correction — Chart 502','MPA NM 29/2025','Chart 502',[
+  ll(103,51.43,1,10.81),ll(103,53.08,1,11.73),ll(103,57.64,1,13.56),ll(104,5.00,1,14.59),ll(104,8.75,1,14.25),ll(104,15.46,1,14.27),ll(104,17.31,1,14.66)])
+ # NM 74P/2025 — exact route positions for fibre-optic cable deployment.
+ deployment=[{'name':'Batam–Jakarta fibre-optic cable deployment route','notice':'MPA NM 74P/2025','source_notice':'Pushidrosal Indonesian Notice 25/225P/2025','route_status':'deployment / preliminary route positions','geometry_authority':'MPA republication of Indonesian hydrographic notice','geometry':LineString([
+  ll(104,8.32,1,10.02),ll(104,8.47,1,10.00),ll(104,9.39,1,12.90),ll(104,9.43,1,12.93),ll(104,17.35,1,12.96),ll(104,24.03,1,14.35),ll(104,28.24,1,16.60),ll(104,42.35,1,17.43),ll(104,43.24,1,17.89),ll(104,48.89,1,15.88)])}]
+ # Admiralty NTM 4692/25, republished in the MPA monthly extract.
+ line('South China Sea submarine cable — Chart 4039 route A','MPA Nov 2025 extract / Admiralty NTM 4692/25','Chart 4039',[
+  ll(103,38.22,1,1.50),ll(103,35.60,1,2.96),ll(103,35.57,1,3.14),ll(103,33.37,1,4.47),ll(103,33.24,1,4.95),ll(103,31.20,1,6.12)],authority='UKHO/Indonesian hydrographic notice republished by MPA')
+ line('South China Sea submarine cable — Chart 4039 route B','MPA Nov 2025 extract / Admiralty NTM 4692/25','Chart 4039',[
+  ll(103,40.46,1,1.50),ll(103,42.60,1,3.10),ll(103,43.76,1,4.13),ll(103,45.98,1,6.21),ll(103,45.69,1,7.08),ll(103,46.37,1,7.69),ll(103,47.27,1,8.29),ll(103,48.82,1,8.85),ll(103,49.00,1,8.97)],authority='UKHO/Indonesian hydrographic notice republished by MPA')
+ line('South China Sea submarine cable — Chart 4040','MPA Nov 2025 extract / Admiralty NTM 4692/25','Chart 4040',[
+  ll(103,46.03,1,7.40),ll(103,46.33,1,7.65),ll(103,46.68,1,7.90),ll(103,47.12,1,8.19),ll(103,47.27,1,8.28),ll(103,48.83,1,8.86),ll(103,49.73,1,9.46),ll(103,50.73,1,9.94),ll(103,50.94,1,10.02),ll(103,51.06,1,10.09),ll(103,51.20,1,10.18),ll(103,51.36,1,10.35),ll(103,51.68,1,10.54),ll(103,51.73,1,10.56),ll(103,51.90,1,10.61)],authority='UKHO/Indonesian hydrographic notice republished by MPA')
+ line('South China Sea submarine cable — Chart 4041','MPA Nov 2025 extract / Admiralty NTM 4692/25','Chart 4041',[
+  ll(103,46.90,1,8.08),ll(103,48.85,1,8.87),ll(103,49.74,1,9.46),ll(103,50.96,1,10.03),ll(103,51.68,1,10.56),ll(103,52.12,1,10.64),ll(103,52.18,1,10.78),ll(103,53.56,1,10.92),ll(103,54.29,1,11.65),ll(103,55.09,1,11.42),ll(103,57.27,1,12.57),ll(103,57.52,1,12.46),ll(103,58.31,1,12.88),ll(104,2.03,1,13.35),ll(104,4.70,1,13.90)],authority='UKHO/Indonesian hydrographic notice republished by MPA')
+ line('South China Sea submarine cable — Chart 4042','MPA Nov 2025 extract / Admiralty NTM 4692/25','Chart 4042',[
+  ll(104,1.70,1,13.34),ll(104,2.33,1,13.35),ll(104,4.12,1,13.74),ll(104,4.28,1,13.88),ll(104,4.42,1,13.94),ll(104,6.47,1,13.30),ll(104,8.10,1,13.90),ll(104,8.23,1,14.15),ll(104,9.67,1,14.07),ll(104,9.85,1,14.36),ll(104,15.02,1,14.38),ll(104,16.64,1,14.80),ll(104,17.72,1,15.21),ll(104,17.96,1,15.00),ll(104,19.50,1,15.48)],authority='UKHO/Indonesian hydrographic notice republished by MPA')
+ working=[
+  {'name':'Submarine power cable installation working area','notice':'MPA PMN 38/2025','route_status':'temporary marine working area — not cable route','geometry_authority':'Maritime and Port Authority of Singapore','geometry':Polygon([ll(103,47.026,1,27.593),ll(103,47.380,1,27.817),ll(103,47.457,1,27.687),ll(103,47.108,1,27.461),ll(103,47.026,1,27.593)])},
+  {'name':'Fibre-optic cable installation working area','notice':'MPA PMN 38/2026 (supersedes PMN 119/2025)','route_status':'temporary marine working area — not cable route','validity':'2026-03-06 through 2026-09-05','geometry_authority':'Maritime and Port Authority of Singapore','geometry':Polygon([ll(103,51.160,1,12.860),ll(103,51.122,1,12.936),ll(103,51.107,1,13.225),ll(103,51.155,1,13.332),ll(103,51.240,1,13.217),ll(103,51.167,1,13.127),ll(103,51.333,1,12.982),ll(103,51.160,1,12.860)])}
+ ]
+ return (
+  normalize_gdf(gpd.GeoDataFrame(charted,crs=4326)),
+  normalize_gdf(gpd.GeoDataFrame(deployment,crs=4326)),
+  normalize_gdf(gpd.GeoDataFrame(working,crs=4326)),
+ )
+
+def malaysia_ntm_routes(s,tmp):
+ routes=[]; notes=[]
+ url='https://www.marine.gov.my/elementor-34322/'
+ try:
+  html=s.get(url,timeout=180).text
+  hrefs=re.findall(r'href=["\']([^"\']+\.pdf)["\']',html,re.I)
+  for h in hrefs:
+   full=requests.compat.urljoin(url,h)
+   if not re.search(r'cable|SEA-H2X|SEA-ME-WE|ALC|SJC',full,re.I):continue
+   p=tmp/('ntm_'+hashlib.md5(full.encode()).hexdigest()+'.pdf')
+   try:dl(s,full,p); text='\n'.join((page.extract_text() or '') for page in PdfReader(str(p)).pages)
+   except Exception as e: notes.append({'url':full,'error':str(e)});continue

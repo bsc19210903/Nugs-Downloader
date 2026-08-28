@@ -1,0 +1,77 @@
+  p=add(parent,'Polygon');add(p,'tessellate','1');o=add(p,'outerBoundaryIs');r=add(o,'LinearRing');add(r,'coordinates',coords(g.exterior.coords))
+  for ring in g.interiors:i=add(p,'innerBoundaryIs');rr=add(i,'LinearRing');add(rr,'coordinates',coords(ring.coords))
+ elif t.startswith('Multi') or t=='GeometryCollection':
+  m=add(parent,'MultiGeometry')
+  for x in g.geoms:add_geom(m,x)
+ else: raise ValueError(t)
+
+def safe(v):
+ if v is None:return ''
+ if isinstance(v,float) and (math.isnan(v) or math.isinf(v)):return ''
+ return str(v)[:5000]
+
+def gdf_folder(src,gdfs,res):
+ f=etree.Element(K+'Folder');add(f,'name',src['title']);add(f,'open','0')
+ desc=f"Publisher: {src['publisher']}\nCategory: {src['category']}\nSource: {src['url']}\nRetrieved: {now()}"
+ add(f,'description',desc); idx=0
+ for layer,gdf in gdfs:
+  lf=add(f,'Folder');add(lf,'name',layer);add(lf,'open','0')
+  for _,row in gdf.iterrows():
+   g=row.geometry
+   if g is None or g.is_empty:continue
+   idx+=1;pm=add(lf,'Placemark')
+   name=''
+   for key in row.index:
+    if key!='geometry' and re.search(r'name|title|area|site|project|label|code',str(key),re.I) and safe(row[key]): name=safe(row[key]);break
+   add(pm,'name',name or f"{src['title']} #{idx}")
+   ed=add(pm,'ExtendedData')
+   base={'snapshot_source_id':src['id'],'snapshot_publisher':src['publisher'],'snapshot_category':src['category'],'snapshot_source_url':src['url'],'snapshot_layer':layer,'snapshot_retrieved_at':now()}
+   for k,v in list(base.items())+[(str(k),row[k]) for k in row.index if k!='geometry']:
+    d=add(ed,'Data',name=re.sub(r'[^\w.:-]','_',str(k))[:150]);add(d,'value',safe(v))
+   add_geom(pm,g);res.features+=1;res.vertices+=geom_vertices(g)
+ return f
+
+def parse_coord(s):
+ s=s.strip().upper().replace('º','°').replace('’',"'").replace('′',"'").replace('″','"').replace('·','.')
+ hemi=None
+ m=re.search(r'([NSEW])',s)
+ if m:hemi=m.group(1)
+ nums=[float(x) for x in re.findall(r'\d+(?:\.\d+)?',s)]
+ if not nums:return None
+ val=nums[0]+(nums[1]/60 if len(nums)>1 else 0)+(nums[2]/3600 if len(nums)>2 else 0)
+ if hemi in ('S','W'):val=-val
+ return val
+
+
+def dm(deg,minutes,hemi=None):
+ val=float(deg)+float(minutes)/60.0
+ if str(hemi or '').upper() in ('S','W'):val=-val
+ return val
+
+def ll(lon_deg,lon_min,lat_deg,lat_min,lon_hemi='E',lat_hemi='N'):
+ return (dm(lon_deg,lon_min,lon_hemi),dm(lat_deg,lat_min,lat_hemi))
+
+def singapore_authoritative_gdfs():
+ """Exact coordinates transcribed from official Singapore MPA notices.
+
+ Each chart fragment stays separate. This avoids drawing invented connections
+ across chart boundaries or between legally distinct notices.
+ """
+ charted=[]
+ def line(name,notice,chart,pts,status='charted submarine cable',authority='Maritime and Port Authority of Singapore'):
+  charted.append({'name':name,'notice':notice,'chart':chart,'route_status':status,'geometry_authority':authority,'geometry':LineString(pts)})
+ # NM 29/2025 — chart corrections for an existing submarine cable.
+ line('Submarine cable chart correction — GSP1/SP1 west','MPA NM 29/2025','GSP1 / SP1',[
+  ll(103,37.19,1,12.98),ll(103,36.89,1,12.27),ll(103,35.93,1,11.66),ll(103,34.68,1,11.53),ll(103,34.00,1,10.50)])
+ line('Submarine cable chart correction — GSP1/SP1 central','MPA NM 29/2025','GSP1 / SP1',[
+  ll(103,44.93,1,6.43),ll(103,45.10,1,7.04),ll(103,53.08,1,11.73),ll(103,57.64,1,13.56),ll(104,5.00,1,14.59),ll(104,8.10,1,14.31)])
+ line('Submarine cable chart correction — GSP1/SP1 east','MPA NM 29/2025','GSP1 / SP1',[
+  ll(104,38.17,1,18.53),ll(104,38.60,1,18.64),ll(104,40.30,1,18.90),ll(104,44.00,1,17.42),ll(104,48.89,1,15.63)])
+ line('Submarine cable chart correction — Chart 501','MPA NM 29/2025','Chart 501',[
+  ll(103,37.19,1,12.98),ll(103,36.89,1,12.27),ll(103,35.93,1,11.66),ll(103,34.68,1,11.53),ll(103,31.50,1,6.81),ll(103,31.53,1,6.58),ll(103,34.46,1,4.53),ll(103,38.79,1,1.79),ll(103,39.53,1,1.66),ll(103,40.10,1,1.80),ll(103,44.80,1,5.94),ll(103,45.10,1,7.04),ll(103,53.08,1,11.73),ll(103,55.05,1,12.52)])
+ line('Submarine cable chart correction — Chart 500 west','MPA NM 29/2025','Chart 500',[
+  ll(103,37.19,1,12.98),ll(103,36.89,1,12.27),ll(103,35.93,1,11.66),ll(103,34.68,1,11.53),ll(103,31.50,1,6.81),ll(103,31.53,1,6.58),ll(103,34.46,1,4.53),ll(103,35.21,1,4.05)])
+ line('Submarine cable chart correction — Chart 500 east','MPA NM 29/2025','Chart 500',[
+  ll(103,42.64,1,4.05),ll(103,44.61,1,5.79)])
+ line('Submarine cable chart correction — Chart 503','MPA NM 29/2025','Chart 503',[
+  ll(104,11.89,1,14.26),ll(104,15.46,1,14.27),ll(104,23.93,1,16.07),ll(104,25.13,1,15.87),ll(104,26.07,1,16.49),ll(104,26.86,1,16.49),ll(104,27.41,1,16.77),ll(104,32.71,1,17.55),ll(104,33.76,1,17.35),ll(104,38.17,1,18.53)])

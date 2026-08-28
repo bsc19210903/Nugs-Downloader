@@ -1,0 +1,52 @@
+  for subdir in ['mpa','asd','ssru','ssmu','rb','oma','mpapd']:
+   base=d/'geographical_data'/subdir
+   if not base.exists():continue
+   candidates=list(base.glob('*.json'))+list(base.glob('*EPSG4326.shp'))
+   for p in candidates[:2]:
+    try:g=normalize_gdf(gpd.read_file(p));
+    except Exception:continue
+    if not g.empty:gdfs.append((f'{subdir}/{p.name}',g));break
+  if not gdfs:raise RuntimeError('no CCAMLR layers')
+  folders.append((res.region,gdf_folder(src,gdfs,res)));res.status='embedded';res.files=[n for n,_ in gdfs]
+ except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}']
+ results.append(res)
+ # Singapore MPA exact chart corrections, route positions and working-area permits
+ sg_sets=singapore_authoritative_gdfs()
+ sg_specs=[
+  ('sg_mpa_charted_cables','Singapore MPA Charted Submarine Cable Routes','Charted and corrected submarine cable positions','https://www.mpa.gov.sg/staticfile/CWP/assets/ntm/2025/NTM2925.pdf','Official notice coordinate tables',sg_sets[0]),
+  ('sg_mpa_deployment_route','Singapore MPA Fibre-Optic Cable Deployment Route','Permit/deployment route position list','https://www.mpa.gov.sg/staticfile/CWP/assets/ntm/2025/NTM7425.pdf','Official notice coordinate table',sg_sets[1]),
+  ('sg_mpa_working_areas','Singapore MPA Cable Installation Working Areas','Temporary cable-installation working polygons','https://www.mpa.gov.sg/docs/mpalibraries/circulars-and-notices/port-marine-circulars/pmc-38-of-2026.pdf','Official port marine notice coordinate tables',sg_sets[2]),
+ ]
+ for sid,title,cat,url,method,g in sg_specs:
+  res=SourceResult(sid,'Asia / Pacific','Singapore',title,cat,'Maritime and Port Authority of Singapore',url,method);res.retrieved_at=now();src={'id':sid,'title':title,'category':cat,'publisher':res.publisher,'url':url}
+  try:
+   folders.append((res.region,gdf_folder(src,[('Official coordinate tables',g)],res)));res.status='embedded';res.files=['manual transcription verified against official coordinate table']
+  except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}']
+  results.append(res)
+
+ # Malaysia notices-to-mariners exact route coordinate extraction
+ sid='malaysia_ntm_rpl';res=SourceResult(sid,'Asia / Pacific','Malaysia','Malaysia Notice-to-Mariners Submarine Cable Route Positions','Permit/installation-notice route position lists','Malaysia Marine Department','https://www.marine.gov.my/elementor-34322/','permit-pdf-rpl');res.retrieved_at=now();src={'id':sid,'title':res.title,'category':res.category,'publisher':res.publisher,'url':res.source_url}
+ try:
+  routes,notes=malaysia_ntm_routes(s,tmp);(a.out/'malaysia_ntm_parse_ledger.json').write_text(json.dumps(notes,indent=2,ensure_ascii=False))
+  if routes:
+   rows=[{'name':n,'notice_url':u,'excerpt':ex,'geometry':g} for n,g,u,ex in routes];g=normalize_gdf(gpd.GeoDataFrame(rows,crs=4326));folders.append((res.region,gdf_folder(src,[('RPL-derived routes',g)],res)));res.status='embedded';res.files=[x[0] for x in routes]
+  else:raise RuntimeError('no route position list could be parsed from linked notice PDFs')
+ except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}']
+ results.append(res)
+ # Build static KML
+ root=etree.Element(K+'kml',nsmap={None:KML_NS});doc=add(root,'Document');add(doc,'name','Global Fisheries & Submarine Cable Deep Supplement — Static');add(doc,'description','Fully embedded permit-derived cable geometry and international fisheries-management geometry. No NetworkLinks or runtime APIs.')
+ order=['Asia / Pacific','Africa','International Waters — Atlantic','International Waters — Northwest Atlantic','International Waters — Northeast Atlantic','International Waters — Indian Ocean','International Waters — Southern Indian Ocean','International Waters — South Pacific','International Waters — Southern Ocean']
+ for region in order:
+  rf=add(doc,'Folder');add(rf,'name',region);add(rf,'open','0')
+  for r,f in folders:
+   if r==region:rf.append(f)
+ kml=a.out/'global_deep_supplement.kml';etree.ElementTree(root).write(str(kml),encoding='UTF-8',xml_declaration=True,pretty_print=False)
+ kmz=a.out/'global_deep_supplement.kmz'
+ with zipfile.ZipFile(kmz,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:z.write(kml,'doc.kml')
+ # validation
+ tr=etree.parse(str(kml),etree.XMLParser(huge_tree=True));pms=tr.xpath(".//*[local-name()='Placemark']");nls=tr.xpath(".//*[local-name()='NetworkLink']");coords_els=tr.xpath(".//*[local-name()='coordinates']");bad=0;verts=0
+ for e in coords_els:
+  for t in re.split(r'\s+',e.text.strip() if e.text else ''):
+   if not t:continue
+   try:lon,lat=map(float,t.split(',')[:2]);bad+=0 if -180<=lon<=180 and -90<=lat<=90 else 1;verts+=1
+   except:bad+=1

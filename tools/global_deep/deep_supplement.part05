@@ -1,0 +1,63 @@
+   pts=[]
+   # Match latitude then longitude on same/adjacent line; supports decimal minutes and DMS.
+   lines=[x.strip() for x in text.splitlines() if x.strip()]
+   for i,line in enumerate(lines):
+    candidates=[line]+lines[i:i+3]
+    blob=' '.join(candidates)
+    latm=re.search(r'(\d{1,2}\s*[° ]\s*\d{1,2}(?:\.\d+)?\s*[\' ]?(?:\d{1,2}(?:\.\d+)?\s*\")?\s*[NS])',blob,re.I)
+    lonm=re.search(r'(\d{2,3}\s*[° ]\s*\d{1,2}(?:\.\d+)?\s*[\' ]?(?:\d{1,2}(?:\.\d+)?\s*\")?\s*[EW])',blob,re.I)
+    if latm and lonm:
+     lat=parse_coord(latm.group(1));lon=parse_coord(lonm.group(1))
+     if lat is not None and lon is not None and (-90<=lat<=90 and -180<=lon<=180):
+      if not pts or abs(pts[-1][0]-lon)>1e-8 or abs(pts[-1][1]-lat)>1e-8:pts.append((lon,lat))
+   if len(pts)>=2: routes.append((Path(full).name,LineString(pts),full,text[:1000]))
+   notes.append({'url':full,'points':len(pts),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+ except Exception as e: notes.append({'url':url,'error':str(e)})
+ return routes,notes
+
+def main():
+ ap=argparse.ArgumentParser();ap.add_argument('--out',type=Path,default=Path('dist-deep'));a=ap.parse_args();a.out.mkdir(parents=True,exist_ok=True)
+ s=sess();tmp=Path(tempfile.mkdtemp(prefix='deep-')); folders=[];results=[]
+ for sid,region,country,title,cat,pub,url in VECTORS:
+  res=SourceResult(sid,region,country,title,cat,pub,url,'archive');res.retrieved_at=now();src={'id':sid,'title':title,'category':cat,'publisher':pub,'url':url}
+  try:
+   p=tmp/(sid+'.zip');r=dl(s,url,p);res.bytes_downloaded=p.stat().st_size;res.sha256=hashlib.sha256(p.read_bytes()).hexdigest();gdfs=read_archive(p,tmp);res.files=[n for n,_ in gdfs]
+   if not gdfs:raise RuntimeError('no readable vector layers')
+   folders.append((region,gdf_folder(src,gdfs,res)));res.status='embedded'
+  except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}',traceback.format_exc(limit=3)]
+  results.append(res)
+ # ArcGIS services
+ for sid,region,country,title,cat,pub,root,pattern in ARCGIS:
+  res=SourceResult(sid,region,country,title,cat,pub,root,'arcgis');res.retrieved_at=now();src={'id':sid,'title':title,'category':cat,'publisher':pub,'url':root};gdfs=[]
+  try:
+   for lid,name in arcgis_layers(s,root,pattern):
+    g=arcgis_gdf(s,f'{root}/{lid}')
+    if sid in {'au_epbc','za_eia_cables'} and not g.empty:
+     cols=[c for c in g.columns if c!='geometry']; mask=pd.Series(False,index=g.index)
+     for c in cols:mask=mask|g[c].astype(str).str.contains(r'submarine cable|subsea cable|undersea cable|offshore cable|telecommunication cable|fibre optic|fiber optic|interconnector',case=False,regex=True,na=False)
+     g=g[mask]
+    if not g.empty:gdfs.append((name,g))
+   if not gdfs:raise RuntimeError('no matching public features')
+   folders.append((region,gdf_folder(src,gdfs,res)));res.status='embedded';res.files=[n for n,_ in gdfs]
+  except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}',traceback.format_exc(limit=3)]
+  results.append(res)
+ # ICCAT geopackage in RAR
+ sid='iccat_gis';res=SourceResult(sid,'International Waters — Atlantic','ICCAT Area','ICCAT Convention, Subareas and Management Units','RFMO and stock-management areas','ICCAT','https://www.iccat.int/Documents/Gis/ICCAT_gis.rar','rar-gpkg');res.retrieved_at=now();src={'id':sid,'title':res.title,'category':res.category,'publisher':res.publisher,'url':res.source_url}
+ try:
+  p=tmp/'iccat.rar';dl(s,res.source_url,p);res.bytes_downloaded=p.stat().st_size;res.sha256=hashlib.sha256(p.read_bytes()).hexdigest();d=tmp/'iccat';d.mkdir();subprocess.run(['7z','x','-y',str(p),f'-o{d}'],check=True,stdout=subprocess.DEVNULL)
+  gdfs=[]
+  import pyogrio
+  for gpkg in d.rglob('*.gpkg'):
+   for lyr in pyogrio.list_layers(gpkg)[:,0]:
+    if re.search(r'grid',str(lyr),re.I):continue
+    try:g=normalize_gdf(gpd.read_file(gpkg,layer=lyr));gdfs.append((str(lyr),g))
+    except Exception:pass
+  if not gdfs:raise RuntimeError('no ICCAT layers')
+  folders.append((res.region,gdf_folder(src,gdfs,res)));res.status='embedded';res.files=[n for n,_ in gdfs]
+ except Exception as e:res.status='failed';res.errors=[f'{type(e).__name__}: {e}']
+ results.append(res)
+ # CCAMLR official data repository, selected operational spatial datasets
+ sid='ccamlr';res=SourceResult(sid,'International Waters — Southern Ocean','CCAMLR Area','CCAMLR MPAs, Management Areas and Research Blocks','Southern Ocean fisheries management geometry','CCAMLR','https://github.com/ccamlr/data','official-github');res.retrieved_at=now();src={'id':sid,'title':res.title,'category':res.category,'publisher':res.publisher,'url':res.source_url}
+ try:
+  d=tmp/'ccamlr';subprocess.run(['git','clone','--depth','1','https://github.com/ccamlr/data.git',str(d)],check=True,stdout=subprocess.DEVNULL)
+  gdfs=[]

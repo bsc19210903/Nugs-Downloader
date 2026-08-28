@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, csv, hashlib, io, json, math, os, re, shutil, subprocess, tempfile, time, traceback, zipfile
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+import requests
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, GeometryCollection
+from shapely.validation import make_valid
+from lxml import etree
+from pypdf import PdfReader
+
+KML_NS='http://www.opengis.net/kml/2.2'; K=f'{{{KML_NS}}}'
+UA='GlobalFisheriesDeepStatic/2026-08-28'
+
+@dataclass
+class SourceResult:
+    id:str; region:str; country:str; title:str; category:str; publisher:str; source_url:str; method:str
+    status:str='pending'; features:int=0; vertices:int=0; bytes_downloaded:int=0; sha256:str=''; retrieved_at:str=''
+    warnings:list[str]=field(default_factory=list); errors:list[str]=field(default_factory=list); files:list[str]=field(default_factory=list)
+
+VECTORS=[
+('nafo_divisions','International Waters — Northwest Atlantic','NAFO Regulatory Area','NAFO Divisions','RFMO management areas','NAFO','https://www.nafo.int/Portals/0/GIS/Divisions.zip'),
+('nafo_footprint','International Waters — Northwest Atlantic','NAFO Regulatory Area','NAFO Bottom Fishing Footprint','Bottom-fishing footprint','NAFO','https://www.nafo.int/Portals/0/GIS/Footprint_Projected.zip'),
+('nafo_vme','International Waters — Northwest Atlantic','NAFO Regulatory Area','NAFO VME Closures','Vulnerable marine ecosystem closures','NAFO','https://www.nafo.int/Portals/0/GIS/NAFO_VME_closures_2022.zip'),
+('nafo_seamounts','International Waters — Northwest Atlantic','NAFO Regulatory Area','NAFO Seamount Closures','Seamount closures','NAFO','https://www.nafo.int/Portals/0/GIS/Seamounts2022poly.zip'),
+('neafc_midatlantic','International Waters — Northeast Atlantic','NEAFC Regulatory Area','NEAFC Mid-Atlantic VME Closures','Vulnerable marine ecosystem closures','NEAFC','https://www.neafc.org/system/files/mid-atlantic-vme-closures.zip'),
+('neafc_hatton_rockall','International Waters — Northeast Atlantic','NEAFC Regulatory Area','NEAFC Hatton-Rockall VME Closures','Vulnerable marine ecosystem closures','NEAFC','https://www.neafc.org/system/files/hr_shape_files_2018.zip'),
+('neafc_irminger','International Waters — Northeast Atlantic','NEAFC Regulatory Area','NEAFC Irminger Sea Closure','Fisheries closure','NEAFC','https://www.neafc.org/system/files/IrmingerSeaClosure-shapefiles.zip'),
+('siofa_area','International Waters — Southern Indian Ocean','SIOFA Area','SIOFA Agreement Area','RFMO management area','SIOFA','https://siofa.org/sites/default/files/gis/SIOFA-Area.zip'),
+('siofa_subareas','International Waters — Southern Indian Ocean','SIOFA Area','SIOFA Sub-Areas','RFMO management subareas','SIOFA','https://siofa.org/sites/default/files/gis/siofa_subarea_final.zip'),
+('siofa_toothfish','International Waters — Southern Indian Ocean','SIOFA Area','SIOFA Patagonian Toothfish Management Areas','Toothfish management areas','SIOFA','https://siofa.org/sites/default/files/gis/TOP-Interim-Management-Areas.zip'),
+('siofa_bfc','International Waters — Southern Indian Ocean','SIOFA Area','SIOFA Benthic Fishery Closures','Benthic fishery closures','SIOFA','https://siofa.org/sites/default/files/gis/SIOFA-BFC-CMM18.zip'),
+('siofa_footprint','International Waters — Southern Indian Ocean','SIOFA Area','SIOFA Bottom Fishing Footprint 2023','Bottom-fishing footprint','SIOFA','https://siofa.org/sites/default/files/gis/SIOFA_bottom%20fishing_footprint-2023.zip'),
+('sprfmo_bottom','International Waters — South Pacific','SPRFMO Area','SPRFMO Bottom-Fishing Management Areas','Bottom-fishing management areas','SPRFMO','https://www.sprfmo.int/assets/Fisheries/Conservation-and-Management-Measures/2019-CMMs/CMM03-2019Shapefiles-Apr2019.zip'),
+('acma_wa','Asia / Pacific','Australia','ACMA Western Australia Submarine Cable Protection Zone','Submarine cable protection zone / nominal cable positions','Australian Communications and Media Authority','https://www.acma.gov.au/sites/default/files/2019-10/Submarine%20Telecommunications%20Cables%20WA%20Protection%20Zone%20Geographic%20Coordinates.ZIP'),
+('acma_nsw','Asia / Pacific','Australia','ACMA New South Wales Submarine Cable Protection Zones','Submarine cable protection zones / nominal cable positions','Australian Communications and Media Authority','https://www.acma.gov.au/sites/default/files/2019-10/Submarine%20Telecommunications%20Cables%20NSW%20Protection%20Zones%20Geographic%20Coordinates.zip'),
