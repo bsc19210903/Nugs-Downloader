@@ -37,11 +37,49 @@ jobs:
           gzip -dc /tmp/global-static/live_sources.json.gz > /tmp/global-static/live_sources.json
           python -m py_compile /tmp/global-static/build_remote_static.py
           python -m json.tool /tmp/global-static/live_sources.json >/dev/null
+      - name: Parallelize the verified collector
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/global-static/build_remote_static.py')
+          t=p.read_text()
+          t=t.replace('from __future__ import annotations\n', 'from __future__ import annotations\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n')
+          t=t.replace('ap=argparse.ArgumentParser(); ap.add_argument("--sources",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); args=ap.parse_args()', 'ap=argparse.ArgumentParser(); ap.add_argument("--sources",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); ap.add_argument("--workers",type=int,default=10); args=ap.parse_args()')
+          old='''    s=session(); folders=[]; ledgers=[]
+    for i,source in enumerate(sources,1):
+        print(f"[{i}/{len(sources)}] {source['id']} — {source['title']}",flush=True)
+        folder,ledger=process_source(s,source); ledgers.append(ledger)
+        if folder is not None: folders.append((source,folder))
+'''
+          new='''    folders=[]; ledgers=[]
+    def one(index_source):
+        i, source = index_source
+        print(f"[{i}/{len(sources)}] START {source['id']} — {source['title']}",flush=True)
+        folder, ledger = process_source(session(), source)
+        print(f"[{i}/{len(sources)}] DONE {source['id']} status={ledger['status']} features={ledger['features_embedded']}",flush=True)
+        return i, source, folder, ledger
+    completed=[]
+    with ThreadPoolExecutor(max_workers=max(1,args.workers)) as pool:
+        futures=[pool.submit(one,x) for x in enumerate(sources,1)]
+        for future in as_completed(futures):
+            completed.append(future.result())
+    completed.sort(key=lambda x:x[0])
+    for _,source,folder,ledger in completed:
+        ledgers.append(ledger)
+        if folder is not None: folders.append((source,folder))
+'''
+          if old not in t:
+              raise SystemExit('collector loop patch target not found')
+          t=t.replace(old,new)
+          p.write_text(t)
+          PY
+          python -m py_compile /tmp/global-static/build_remote_static.py
       - name: Acquire and embed all live source geometry
         run: |
           python /tmp/global-static/build_remote_static.py \
             --sources /tmp/global-static/live_sources.json \
-            --out dist
+            --out dist \
+            --workers 10
       - name: Verify static artifact
         run: |
           python - <<'PY'
