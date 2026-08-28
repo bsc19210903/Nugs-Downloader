@@ -1,0 +1,49 @@
+name: Fetch Japan MSIL API details
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - .github/workflows/msil-api-details.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch API detail and operation definitions
+        run: |
+          python - <<'PY'
+          import json, urllib.parse, urllib.request
+          from pathlib import Path
+          ids=['common-fishery-right2024;rev=1','demarcated-fishery-right2024;rev=1','fixed-gear-fishery-right2024;rev=1','submarine-cable-line;rev=1','submarine-cable-area;rev=1']
+          base='https://portal.msil.go.jp/developer/apis/'
+          out={}
+          for ident in ids:
+            out[ident]={}
+            for suffix in ['', '/operations?$top=1000&$skip=0']:
+              u=base+urllib.parse.quote(ident,safe=';')+suffix+('&' if '?' in suffix else '?')+'api-version=2022-04-01-preview'
+              try:
+                req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
+                with urllib.request.urlopen(req,timeout=120) as r: raw=r.read();
+                try:d=json.loads(raw)
+                except Exception:d=raw.decode('utf-8','replace')
+                out[ident][suffix or 'detail']={'url':u,'data':d}
+              except Exception as e:out[ident][suffix or 'detail']={'url':u,'error':repr(e)}
+          Path('msil-api-details.json').write_text(json.dumps(out,ensure_ascii=False,indent=2))
+          print(json.dumps(out,ensure_ascii=False)[:10000])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msil-api-details
+          path: msil-api-details.json
+          retention-days: 3
