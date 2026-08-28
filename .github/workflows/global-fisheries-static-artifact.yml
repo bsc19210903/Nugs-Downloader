@@ -46,11 +46,16 @@ jobs:
       - name: Verify static artifact
         run: |
           python -c "import json,pathlib; v=json.loads(pathlib.Path('dist/global_remote_static_validation.json').read_text()); assert v['xml_parse_ok'] and v['networklinks_zero'] and v['coordinates_valid'] and v['placemarks']>0; print(json.dumps(v,indent=2))"
-      - name: Upload KML/KMZ and audit ledger
+      - name: Upload compressed map and audit ledger
         uses: actions/upload-artifact@v4
         with:
-          name: global-fisheries-remote-static
-          path: dist/*
+          name: global-fisheries-remote-static-compact
+          path: |
+            dist/global_remote_static.kmz
+            dist/global_remote_static_ledger.json
+            dist/global_remote_static_ledger.csv
+            dist/global_remote_static_validation.json
+            dist/global_remote_static_summary.txt
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
