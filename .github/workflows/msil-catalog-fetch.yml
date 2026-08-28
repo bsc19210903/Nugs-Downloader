@@ -1,0 +1,62 @@
+name: Fetch Japan MSIL API catalogue
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - .github/workflows/msil-catalog-fetch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch catalogue and related definitions
+        run: |
+          python - <<'PY'
+          import json, re, urllib.parse, urllib.request
+          from pathlib import Path
+          base='https://portal.msil.go.jp'
+          urls=[
+            base+'/developer/apis?$top=1000&$skip=0&skipWorkspaces=true&api-version=2022-04-01-preview',
+            base+'/search-index.json',
+            base+'/config.json',
+            'https://api.msil.go.jp/arcgis/rest/services/FeatureService/v3?f=pjson',
+          ]
+          out={}
+          for u in urls:
+            try:
+              req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0','Ocp-Apim-Subscription-Key':'0e83ad5d93214e04abf37c970c32b641'})
+              with urllib.request.urlopen(req,timeout=120) as r: raw=r.read(); ct=r.headers.get('content-type','')
+              try: data=json.loads(raw)
+              except Exception: data=raw.decode('utf-8','replace')
+              out[u]={'content_type':ct,'data':data}
+            except Exception as e: out[u]={'error':repr(e)}
+          # Inspect individual API records and candidate OpenAPI specs.
+          cat=out[urls[0]].get('data')
+          records=[]
+          if isinstance(cat,dict): records=cat.get('value') or cat.get('items') or []
+          elif isinstance(cat,list): records=cat
+          detail=[]
+          for rec in records:
+            text=json.dumps(rec,ensure_ascii=False)
+            if re.search('漁業権|海底ケーブル|風力|共同漁業|区画漁業|定置漁業|fish|cable|wind',text,re.I):
+              detail.append(rec)
+          out['matched_records']=detail
+          Path('msil-catalog.json').write_text(json.dumps(out,ensure_ascii=False,indent=2))
+          print(json.dumps({'records':len(records),'matched':len(detail)},ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msil-api-catalog
+          path: msil-catalog.json
+          retention-days: 3
