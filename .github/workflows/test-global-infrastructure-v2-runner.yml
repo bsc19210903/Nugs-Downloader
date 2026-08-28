@@ -1,0 +1,29 @@
+name: Test global infrastructure v2 runner
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/test-global-infrastructure-v2-runner.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm hosted runner
+        run: |
+          set -euo pipefail
+          echo "runner-ok" > runner-status.txt
+          python --version
+      - name: Upload test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-infrastructure-v2-runner-test
+          path: runner-status.txt
+          if-no-files-found: error
