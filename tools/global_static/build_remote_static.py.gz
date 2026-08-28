@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import html
+import io
+import json
+import math
+import re
+import sys
+import time
+import traceback
+import urllib.parse
+import zipfile
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+import requests
+from lxml import etree
+
+KML_NS = "http://www.opengis.net/kml/2.2"
+GX_NS = "http://www.google.com/kml/ext/2.2"
+K = f"{{{KML_NS}}}"
+GX = f"{{{GX_NS}}}"
+NSMAP = {None: KML_NS, "gx": GX_NS}
+USER_AGENT = "GlobalFisheriesStaticSnapshot/2026.08 (+https://github.com/)"
+REGION_ORDER = ["Europe", "North America", "South America", "Africa", "Asia / Pacific"]
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sub(parent: etree._Element, tag: str, text: Any | None = None, **attrs: str) -> etree._Element:
+    el = etree.SubElement(parent, K + tag, **attrs)
+    if text is not None:
+        el.text = str(text)
+    return el
+
+
+def text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return ""
+    return str(value)
+
+
+def field_name(value: Any) -> str:
+    s = re.sub(r"[^0-9A-Za-z_.:-]+", "_", str(value)).strip("_")
+    return (s or "field")[:220]
+
+
+def session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({"User-Agent": USER_AGENT, "Accept": "*/*"})
+    retry = requests.adapters.Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(("GET", "POST")),
+    )
+    s.mount("https://", requests.adapters.HTTPAdapter(max_retries=retry))
+    s.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
+    return s
+
+
+def get_bytes(s: requests.Session, url: str, timeout: int = 240) -> tuple[bytes, requests.Response]:
+    print(f"GET {url}", flush=True)
+    r = s.get(url, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    return r.content, r
+
+
+def get_json(s: requests.Session, url: str, params: Mapping[str, Any] | None = None, timeout: int = 240) -> tuple[Any, requests.Response]:
+    print(f"GET JSON {url} {params or ''}", flush=True)
+    r = s.get(url, params=params, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    try:
+        obj = r.json()
+    except Exception as exc:
+        raise RuntimeError(f"Expected JSON from {r.url}; got {r.headers.get('content-type')}: {r.text[:500]}") from exc
+    if isinstance(obj, dict) and obj.get("error"):
+        raise RuntimeError(f"ArcGIS/service error from {r.url}: {obj['error']}")
+    return obj, r
+
+
+def coord(v: Sequence[Any]) -> str:
+    if len(v) < 2:
+        raise ValueError("coordinate has fewer than two values")
+    lon = float(v[0]); lat = float(v[1])
+    if not (-180.000001 <= lon <= 180.000001 and -90.000001 <= lat <= 90.000001):
+        raise ValueError(f"coordinate outside WGS84 range: {lon},{lat}")
+    alt = 0.0
+    if len(v) > 2 and v[2] is not None:
+        try:
+            a = float(v[2])
+            if math.isfinite(a): alt = a
+        except Exception:
+            pass
+    return f"{lon:.7f},{lat:.7f},{alt:.3f}"
+
+
+def add_polygon(parent: etree._Element, rings: Sequence[Sequence[Sequence[Any]]]) -> int:
+    poly = sub(parent, "Polygon")
+    sub(poly, "tessellate", "1")
+    n = 0
+    if rings:
+        outer = sub(poly, "outerBoundaryIs")
+        lr = sub(outer, "LinearRing")
+        sub(lr, "coordinates", " ".join(coord(p) for p in rings[0]))
+        n += len(rings[0])
+        for ring in rings[1:]:
+            inner = sub(poly, "innerBoundaryIs")
+            lr = sub(inner, "LinearRing")
+            sub(lr, "coordinates", " ".join(coord(p) for p in ring))
+            n += len(ring)
+    return n
+
+
+def add_geometry(parent: etree._Element, geometry: Mapping[str, Any]) -> tuple[str, int]:
+    typ = geometry.get("type")
+    c = geometry.get("coordinates")
+    if typ == "Point":
+        g = sub(parent, "Point"); sub(g, "coordinates", coord(c)); return typ, 1
+    if typ == "MultiPoint":
+        mg = sub(parent, "MultiGeometry")
+        for p in c or []:
+            g = sub(mg, "Point"); sub(g, "coordinates", coord(p))
+        return typ, len(c or [])
+    if typ == "LineString":
+        g = sub(parent, "LineString"); sub(g, "tessellate", "1"); sub(g, "coordinates", " ".join(coord(p) for p in c or []))
+        return typ, len(c or [])
+    if typ == "MultiLineString":
+        mg = sub(parent, "MultiGeometry"); n = 0
+        for line in c or []:
+            g = sub(mg, "LineString"); sub(g, "tessellate", "1"); sub(g, "coordinates", " ".join(coord(p) for p in line)); n += len(line)
+        return typ, n
+    if typ == "Polygon":
+        return typ, add_polygon(parent, c or [])
+    if typ == "MultiPolygon":
+        mg = sub(parent, "MultiGeometry"); n = 0
+        for polygon in c or []:
+            n += add_polygon(mg, polygon)
+        return typ, n
+    if typ == "GeometryCollection":
+        mg = sub(parent, "MultiGeometry"); n = 0
+        for g in geometry.get("geometries") or []:
+            _, k = add_geometry(mg, g); n += k
+        return typ, n
+    raise ValueError(f"unsupported GeoJSON geometry type: {typ}")
+
+
+def choose_name(props: Mapping[str, Any], fallback: str) -> str:
+    priority = ("name", "Name", "NAME", "title", "Title", "TITLE", "label", "LABEL", "site_name", "SITE_NAME", "project", "PROJECT", "area_name", "AREA_NAME", "OBJECTID", "objectid", "fid", "id")
+    for key in priority:
+        value = props.get(key)
+        if value not in (None, ""):
+            return text_value(value)[:300]
+    for key, value in props.items():
+        if value not in (None, "") and re.search(r"name|title|label|area|site|project", str(key), re.I):
+            return text_value(value)[:300]
+    return fallback
+
+
+def add_extended(pm: etree._Element, source: Mapping[str, Any], props: Mapping[str, Any], index: int) -> None:
+    ed = sub(pm, "ExtendedData")
+    values: dict[str, Any] = {
+        "snapshot_source_id": source.get("id"),
+        "snapshot_region": source.get("region"),
+        "snapshot_country": source.get("country"),
+        "snapshot_publisher": source.get("publisher"),
+        "snapshot_category": source.get("category"),
+        "snapshot_endpoint": source.get("endpoint"),
+        "snapshot_source_page": source.get("source_page"),
+        "snapshot_authority_class": source.get("authority_class"),
+        "snapshot_legal_status": source.get("legal_status"),
+        "snapshot_navigation_status": source.get("navigation_status"),
+        "snapshot_coverage": source.get("coverage"),
+        "snapshot_caveats": source.get("cave

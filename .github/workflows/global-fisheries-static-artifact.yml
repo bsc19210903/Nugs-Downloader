@@ -1,0 +1,58 @@
+name: Build global fisheries static artifact
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - tools/global_static/**
+      - .github/workflows/global-fisheries-static-artifact.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install converter dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests lxml
+      - name: Restore converter and source manifest
+        run: |
+          mkdir -p /tmp/global-static
+          gzip -dc tools/global_static/build_remote_static.py.gz > /tmp/global-static/build_remote_static.py
+          gzip -dc tools/global_static/live_sources.json.gz > /tmp/global-static/live_sources.json
+          python -m py_compile /tmp/global-static/build_remote_static.py
+      - name: Acquire and embed all live source geometry
+        run: |
+          python /tmp/global-static/build_remote_static.py \
+            --sources /tmp/global-static/live_sources.json \
+            --out dist
+      - name: Verify static artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          v=json.loads(Path('dist/global_remote_static_validation.json').read_text())
+          assert v['xml_parse_ok']
+          assert v['networklinks_zero']
+          assert v['coordinates_valid']
+          assert v['placemarks'] > 0
+          print(json.dumps(v,indent=2))
+          PY
+      - name: Upload KML/KMZ and audit ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fisheries-remote-static
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
