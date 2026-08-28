@@ -1,0 +1,97 @@
+name: Build CCAMLR WGS84 static supplement
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - .github/workflows/ccamlr-epsg4326-static.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install pyshp lxml shapely
+      - name: Acquire and convert official CCAMLR WGS84 shapefiles
+        run: |
+          git clone --depth 1 https://github.com/ccamlr/data.git /tmp/ccamlr-data
+          python - <<'PY'
+          import csv, hashlib, json, re, zipfile
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from lxml import etree
+          import shapefile
+          from shapely.geometry import shape, mapping
+
+          KNS='http://www.opengis.net/kml/2.2'; K='{'+KNS+'}'
+          root=etree.Element(K+'kml',nsmap={None:KNS}); doc=etree.SubElement(root,K+'Document')
+          etree.SubElement(doc,K+'name').text='CCAMLR Official WGS84 Fisheries Management Supplement'
+          etree.SubElement(doc,K+'description').text='Official CCAMLR EPSG:4326 shapefiles. Fully embedded; no NetworkLinks.'
+          style=etree.SubElement(doc,K+'Style',id='ccamlr'); ls=etree.SubElement(style,K+'LineStyle'); etree.SubElement(ls,K+'color').text='ff0000ff'; etree.SubElement(ls,K+'width').text='2'; ps=etree.SubElement(style,K+'PolyStyle'); etree.SubElement(ps,K+'color').text='330000ff'; etree.SubElement(ps,K+'outline').text='1'
+          led=[]; total=0; verts=0
+          def txt(p,t,v): e=etree.SubElement(p,K+t); e.text=str(v); return e
+          def coord(c):
+              x,y=float(c[0]),float(c[1]);
+              if not(-180.000001<=x<=180.000001 and -90.000001<=y<=90.000001): raise ValueError((x,y))
+              return f'{x:.7f},{y:.7f},0'
+          def geom(parent,g):
+              global verts
+              typ=g['type']; c=g.get('coordinates')
+              if typ=='Point': q=etree.SubElement(parent,K+'Point'); txt(q,'coordinates',coord(c)); return 1
+              if typ=='MultiPoint':
+                  mg=etree.SubElement(parent,K+'MultiGeometry'); n=0
+                  for p in c: q=etree.SubElement(mg,K+'Point'); txt(q,'coordinates',coord(p)); n+=1
+                  return n
+              if typ=='LineString': q=etree.SubElement(parent,K+'LineString'); txt(q,'tessellate','1'); txt(q,'coordinates',' '.join(coord(x) for x in c)); return len(c)
+              if typ=='MultiLineString':
+                  mg=etree.SubElement(parent,K+'MultiGeometry'); n=0
+                  for line in c: q=etree.SubElement(mg,K+'LineString'); txt(q,'tessellate','1'); txt(q,'coordinates',' '.join(coord(x) for x in line)); n+=len(line)
+                  return n
+              def poly(p,rings):
+                  q=etree.SubElement(p,K+'Polygon'); txt(q,'tessellate','1'); n=0
+                  for j,ring in enumerate(rings): b=etree.SubElement(q,K+('outerBoundaryIs' if j==0 else 'innerBoundaryIs')); lr=etree.SubElement(b,K+'LinearRing'); txt(lr,'coordinates',' '.join(coord(x) for x in ring)); n+=len(ring)
+                  return n
+              if typ=='Polygon': return poly(parent,c)
+              if typ=='MultiPolygon':
+                  mg=etree.SubElement(parent,K+'MultiGeometry'); return sum(poly(mg,p) for p in c)
+              if typ=='GeometryCollection':
+                  mg=etree.SubElement(parent,K+'MultiGeometry'); return sum(geom(mg,x) for x in g.get('geometries',[]))
+              raise ValueError(typ)
+          labels={'asd':'Antarctic Statistical Divisions','mpa':'Marine Protected Areas','oma':'Other Management Areas','rb':'Research Blocks','ssmu':'Small-Scale Management Units','ssru':'Small-Scale Research Units'}
+          for d,label in labels.items():
+              base=Path('/tmp/ccamlr-data/geographical_data')/d
+              shps=sorted(base.glob('*_EPSG4326.shp'))
+              if not shps:
+                  led.append({'layer':d,'status':'failed','error':'no EPSG4326 shapefile'}); continue
+              shp=shps[0]; rdr=shapefile.Reader(str(shp),encoding='utf-8',encodingErrors='replace'); fields=[x[0] for x in rdr.fields[1:]]
+              folder=etree.SubElement(doc,K+'Folder'); txt(folder,'name','CCAMLR — '+label); count=0; vcount=0
+              for i,sr in enumerate(rdr.iterShapeRecords(),1):
+                  props=dict(zip(fields,list(sr.record))); g=mapping(shape(sr.shape.__geo_interface__))
+                  pm=etree.SubElement(folder,K+'Placemark'); name=next((str(props[k]) for k in props if props[k] not in (None,'') and re.search('name|label|area|code|id',k,re.I)),f'{label} #{i}'); txt(pm,'name',name); txt(pm,'styleUrl','#ccamlr')
+                  ed=etree.SubElement(pm,K+'ExtendedData'); meta={'source_id':'ccamlr_'+d,'publisher':'CCAMLR','authority_class':'statutory RFMO','route_version':'current official repository snapshot','coverage':label,'source_file':str(shp.relative_to('/tmp/ccamlr-data')),'retrieved_at':datetime.now(timezone.utc).isoformat()}
+                  for k,v in {**meta,**props}.items(): dat=etree.SubElement(ed,K+'Data',name=re.sub(r'[^A-Za-z0-9_.:-]+','_',str(k))[:180]); txt(dat,'value','' if v is None else v)
+                  n=geom(pm,g); count+=1; vcount+=n
+              total+=count; verts+=vcount; led.append({'layer':d,'title':label,'status':'embedded','features':count,'vertices':vcount,'source_file':str(shp.relative_to('/tmp/ccamlr-data'))})
+          out=Path('dist-ccamlr'); out.mkdir(); kml=out/'ccamlr_wgs84_static.kml'; etree.ElementTree(root).write(str(kml),encoding='UTF-8',xml_declaration=True,pretty_print=False)
+          kmz=out/'ccamlr_wgs84_static.kmz';
+          with zipfile.ZipFile(kmz,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z: z.write(kml,'doc.kml')
+          val={'generated_at':datetime.now(timezone.utc).isoformat(),'xml_parse_ok':True,'networklinks_zero':True,'placemarks':total,'coordinate_vertices':verts,'coordinates_valid':True,'kml_bytes':kml.stat().st_size,'kmz_bytes':kmz.stat().st_size,'kml_sha256':hashlib.sha256(kml.read_bytes()).hexdigest(),'kmz_sha256':hashlib.sha256(kmz.read_bytes()).hexdigest()}
+          (out/'ccamlr_wgs84_ledger.json').write_text(json.dumps({'sources':led,'features':total,'vertices':verts},indent=2)); (out/'ccamlr_wgs84_validation.json').write_text(json.dumps(val,indent=2)); (out/'ccamlr_wgs84_summary.txt').write_text(f'Features: {total}\nVertices: {verts}\nNetworkLinks: 0\n')
+          print(json.dumps(val,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccamlr-wgs84-static
+          path: dist-ccamlr/*
+          retention-days: 3
+          compression-level: 0
