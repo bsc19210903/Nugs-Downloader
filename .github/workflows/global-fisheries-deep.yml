@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           gzip -dc tools/global_deep/deep_supplement.py.gz > /tmp/deep_supplement.py
-          echo '61a8b471615e2761fb7a220c10114d4e10c78612488d20f2d0fb8a048f657c28  /tmp/deep_supplement.py' | sha256sum -c --strict
+          echo '5108edf6556e364415430f6d499bf29b3c03ed6a2ab638b8b7c58ff9677c39a8  /tmp/deep_supplement.py' | sha256sum -c --strict
           python -m py_compile /tmp/deep_supplement.py
       - name: Acquire permit, route-position and international-waters data
         run: |
