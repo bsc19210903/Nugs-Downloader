@@ -30,35 +30,33 @@ jobs:
           from pathlib import Path
           spec=importlib.util.spec_from_file_location('deep','/tmp/deep.py');m=importlib.util.module_from_spec(spec);sys.modules['deep']=m;spec.loader.exec_module(m)
           b=m.Builder(Path('dist-national'))
-          # Australia EPBC cable-related referral permit footprints.
-          l=m.Ledger('au_epbc_cable_referrals','Australia EPBC Cable-Related Referral Footprints','Asia / Pacific','Australia','Australian Government DCCEEW','Environmental referral / permit footprint','https://services-ap1.arcgis.com/H9avRxl9ofE5pbqz/arcgis/rest/services/EPBC_Act_Referrals/FeatureServer/0',route_version='referral/decision footprint',coverage='project footprint, not an as-laid route')
-          b.add(l,lambda:b.arcgis_layer(l,l.source_url,where="LOWER(PROJECT_TITLE) LIKE '%cable%' OR LOWER(DESCRIPTION) LIKE '%cable%'") )
-          # New Zealand statutory fisheries restrictions and cable/pipeline protection areas.
+          # Australia EPBC cable-related environmental referral footprints.
+          epbc='https://services.arcgis.com/QICyR7WYn5FHwT6S/arcgis/rest/services/EPBC_Referrals/FeatureServer/0'
+          l=m.Ledger('au_epbc_cable_referrals','Australia EPBC Cable-Related Referral Footprints','Asia / Pacific','Australia','Australian Government DCCEEW','Environmental referral / permit footprint',epbc,route_version='environmental referral footprint',coverage='project location/footprint, not an as-laid route')
+          where="UPPER(PROJECT_NAME) LIKE '%CABLE%' OR UPPER(PROJECT_NAME) LIKE '%SUBMARINE%' OR UPPER(PROJECT_TITLE) LIKE '%CABLE%' OR UPPER(PROJECT_TITLE) LIKE '%SUBMARINE%'"
+          b.add(l,lambda:b.arcgis(l,epbc,'permit-footprint',where=where,batch=50))
+          # New Zealand statutory fisheries and cable/pipeline protection layers.
           nzbase='https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_Restrictions_CommercialFishingRegulations/MapServer'
-          for lid,title,cat in [(1,'All Commercial Fishing Prohibitions','fishing-closure'),(4,'Benthic Protection Areas','fishing-closure'),(5,'Closed Seamount Areas','fishing-closure'),(16,'Submarine Cables and Pipelines Protection Areas','cable-protection'),(17,'Trawl Prohibited Areas','fishing-closure'),(18,'Trawl Prohibited Within Line','fishing-closure')]:
-            l=m.Ledger(f'nz_mpi_{lid}',f'New Zealand — {title}','Asia / Pacific','New Zealand','New Zealand Ministry for Primary Industries','Statutory marine restriction',f'{nzbase}/{lid}',route_version='current regulatory layer',coverage=title);b.add(l,lambda l=l,cat=cat:b.arcgis_layer(l,l.source_url,cat))
-          l=m.Ledger('nz_mpi_25','New Zealand — Commercial Trawl Restriction Lines','Asia / Pacific','New Zealand','New Zealand Ministry for Primary Industries','Statutory marine restriction line','https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_Restrictions_CommercialFishingRegulations_Polyline/MapServer/25',route_version='current regulatory layer',coverage='trawl-restriction lines');b.add(l,lambda:b.arcgis_layer(l,l.source_url,'fishing-closure'))
+          for lid,title,style in [(1,'All Commercial Fishing Prohibitions','fishing-closure'),(4,'Benthic Protection Areas','marine-protected'),(5,'Closed Seamount Areas','fishing-closure'),(16,'Submarine Cables and Pipelines Protection Areas','cable-protection'),(17,'Territorial-Sea Trawling Prohibited','fishing-closure'),(18,'Trawl Area Restrictions','fishing-closure')]:
+            url=f'{nzbase}/{lid}'; l=m.Ledger(f'nz_mpi_{lid}',f'New Zealand — {title}','Asia / Pacific','New Zealand','New Zealand Ministry for Primary Industries','Statutory marine restriction',url,route_version='current statutory GIS layer',coverage=title); b.add(l,lambda l=l,url=url,style=style:b.arcgis(l,url,style,batch=50))
+          url='https://maps.mpi.govt.nz/wss/service/arcgis1/guest/MARINE/MARINE_Restrictions_CommercialFishingRegulations_Polyline/MapServer/25'; l=m.Ledger('nz_mpi_25','New Zealand — Commercial Trawl Restriction Lines','Asia / Pacific','New Zealand','New Zealand Ministry for Primary Industries','Statutory marine restriction line',url,route_version='current statutory GIS layer',coverage='trawl-restriction lines'); b.add(l,lambda:b.arcgis(l,url,'fishing-closure',batch=50))
           # Chile fisheries-management areas and modifications.
-          for sid,title,url,rv in [
-            ('cl_amerb_0','Chile Decreed AMERB Areas','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/0','decreed/current'),
-            ('cl_amerb_1','Chile Requested AMERB Areas','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/1','requested/proposed'),
-            ('cl_amerb_2','Chile Rejected AMERB Applications','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/2','rejected/historic'),
-            ('cl_amerb_mod','Chile AMERB Expansion and Reduction Records','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB_AMPLIACIONES_REDUCCIONES/MapServer/0','application/approved modification'),
-            ('cl_amerb_aqua','Chile Authorized Aquaculture Within AMERB','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_ACUIAMERB/MapServer/0','authorized/current'),
+          for sid,title,url,rv,style in [
+            ('cl_amerb_0','Chile Decreed AMERB Areas','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/0','decreed/current','fishing-closure'),
+            ('cl_amerb_1','Chile Requested AMERB Areas','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/1','requested/proposed','permit-footprint'),
+            ('cl_amerb_2','Chile Rejected AMERB Applications','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB/MapServer/2','rejected/historic','permit-footprint'),
+            ('cl_amerb_mod','Chile AMERB Expansion and Reduction Records','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_AMERB_AMPLIACIONES_REDUCCIONES/MapServer/0','application/approved modification','permit-footprint'),
+            ('cl_amerb_aqua','Chile Authorized Aquaculture Within AMERB','https://geoportal.subpesca.cl/server/rest/services/IDE_PUBLICO/SRMPUB_ACUIAMERB/MapServer/0','authorized/current','marine-protected'),
           ]:
-            l=m.Ledger(sid,title,'South America','Chile','Chile SUBPESCA','Fisheries-management area',url,route_version=rv,coverage='national coastal fisheries management');b.add(l,lambda l=l:b.arcgis_layer(l,l.source_url,'fishing-closure'))
-          # South Africa wellhead repairs.
+            l=m.Ledger(sid,title,'South America','Chile','Chile SUBPESCA','Fisheries-management area',url,route_version=rv,coverage='national coastal fisheries management'); b.add(l,lambda l=l,url=url,style=style:b.arcgis(l,url,style,batch=50))
+          # South Africa official wellhead layers.
           for lid,title in [(2,'Petroleum Exploitation Wellheads'),(3,'Petroleum Exploration Wellheads')]:
-            u=f'https://screening.environment.gov.za/server/rest/services/OC_MSP/3_11_NDIR_Minerals/MapServer/{lid}'
-            l=m.Ledger(f'za_wells_{lid}',f'South Africa — {title}','Africa','South Africa','South Africa DFFE','Offshore petroleum wellheads',u,route_version='official planning layer',coverage=title);b.add(l,lambda l=l:b.arcgis_layer(l,l.source_url,'offshore-infrastructure'))
-          # BOEM permit/project component repairs.
-          for sid,title,item in [('boem_export','BOEM Offshore Wind Export Cables','d90e369be3fe49fea26cb745cbc0584b'),('boem_substations','BOEM Offshore Wind Substations','1dc4178929e2447a82e369d219b8eb52')]:
-            l=m.Ledger(sid,title,'North America','United States','U.S. Bureau of Ocean Energy Management','Offshore wind project component',f'https://www.arcgis.com/sharing/rest/content/items/{item}',route_version='proposed/installed per source attributes',coverage=title);b.add(l,lambda l=l,item=item:b.arcgis_item(l,item))
+            url=f'https://screening.environment.gov.za/server/rest/services/OC_MSP/3_11_NDIR_Minerals/MapServer/{lid}'; l=m.Ledger(f'za_wells_{lid}',f'South Africa — {title}','Africa','South Africa','South Africa DFFE','Offshore petroleum wellheads',url,route_version='official planning/current',coverage=title); b.add(l,lambda l=l,url=url:b.arcgis(l,url,'point',batch=50))
           b.finish()
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: national-repairs-fast-static
+          name: national-repairs-fast-static-v2
           path: |
             dist-national/global_deep_supplement.kmz
             dist-national/global_deep_supplement_ledger.json
