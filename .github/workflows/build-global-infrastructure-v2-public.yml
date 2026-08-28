@@ -1,0 +1,86 @@
+name: Build global fiber and electric v2 research release
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - "tools/global_infrastructure_v2/**"
+      - ".github/workflows/build-global-infrastructure-v2-public.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONUNBUFFERED: "1"
+      V2_BUILD_ROOT: build/global_infrastructure_v2
+      MVT_ZOOM: "6"
+      MVT_WORKERS: "16"
+      ARCGIS_MAX_ITEMS: "300"
+      ARCGIS_MAX_LAYERS: "140"
+      ARCGIS_MAX_PER_LAYER: "30000"
+      ARCGIS_MAX_TOTAL: "450000"
+    steps:
+      - name: Check out build branch
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests urllib3 lxml mapbox-vector-tile gdown
+
+      - name: Compile builder
+        run: python -m py_compile tools/global_infrastructure_v2/build_global_infrastructure_v2.py
+
+      - name: Harvest, convert, package, and validate v2
+        run: python tools/global_infrastructure_v2/build_global_infrastructure_v2.py
+
+      - name: Display output inventory
+        if: always()
+        run: |
+          echo "Disk usage:"
+          df -h
+          echo "Outputs:"
+          find build/global_infrastructure_v2/out -maxdepth 1 -type f -printf '%12s  %f\n' 2>/dev/null | sort -n || true
+
+      - name: Enforce required deliverables
+        run: |
+          set -euo pipefail
+          OUT=build/global_infrastructure_v2/out
+          test -s "$OUT/global_fiber_electric_v2_broad_research_2026-08-28.kmz"
+          test -s "$OUT/global_fiber_electric_v2_open_government_2026-08-28.kmz"
+          test -s "$OUT/global_fiber_electric_v2_complete_package_2026-08-28.zip"
+          test -s "$OUT/global_fiber_electric_v2_download_bundle_FIXED_2026-08-28.zip"
+          test -s "$OUT/global_infrastructure_v2_source_manifest.csv"
+          test -s "$OUT/arcgis_harvest_manifest.csv"
+          test -s "$OUT/vector_tileset_conversion_manifest.csv"
+          test -s "$OUT/top_50_global_fiber_owners_public_map_coverage.csv"
+          test -s "$OUT/global_fiber_electric_v2_validation.json"
+          python - <<'PY'
+          import json, pathlib, sys
+          p=pathlib.Path('build/global_infrastructure_v2/out/global_fiber_electric_v2_validation.json')
+          d=json.loads(p.read_text())
+          print(json.dumps(d, indent=2))
+          if d.get('status') != 'pass':
+              raise SystemExit('v2 release gates did not pass')
+          PY
+
+      - name: Upload verified v2 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-2026-08-28
+          path: build/global_infrastructure_v2/out/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
