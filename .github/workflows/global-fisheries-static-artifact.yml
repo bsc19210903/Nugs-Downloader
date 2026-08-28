@@ -25,12 +25,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install requests lxml
-      - name: Restore converter and source manifest
+      - name: Restore and verify converter payloads
         run: |
+          set -euo pipefail
           mkdir -p /tmp/global-static
-          gzip -dc tools/global_static/build_remote_static.py.gz > /tmp/global-static/build_remote_static.py
-          gzip -dc tools/global_static/live_sources.json.gz > /tmp/global-static/live_sources.json
+          cat tools/global_static/build_remote_static.py.gz.part* > /tmp/global-static/build_remote_static.py.gz
+          cat tools/global_static/live_sources.json.gz.part* > /tmp/global-static/live_sources.json.gz
+          echo 'e8f0f1e7e409a507e42d2731e19ad45badc84e5ee32e3b75a8ffb0d90df49fdb  /tmp/global-static/build_remote_static.py.gz' | sha256sum -c --strict
+          echo '96a16f38fb52ac2352e262b2406b14fc06db31cc0cb01fb266d5667acd2819e6  /tmp/global-static/live_sources.json.gz' | sha256sum -c --strict
+          gzip -dc /tmp/global-static/build_remote_static.py.gz > /tmp/global-static/build_remote_static.py
+          gzip -dc /tmp/global-static/live_sources.json.gz > /tmp/global-static/live_sources.json
           python -m py_compile /tmp/global-static/build_remote_static.py
+          python -m json.tool /tmp/global-static/live_sources.json >/dev/null
       - name: Acquire and embed all live source geometry
         run: |
           python /tmp/global-static/build_remote_static.py \
