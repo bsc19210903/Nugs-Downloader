@@ -1,0 +1,1 @@
+Temporary artifact-only branch for the deep global fisheries and submarine-cable static KML build. The generated outputs are not intended to be merged into the application repository.
