@@ -1,0 +1,58 @@
+name: Build global fisheries deep static supplement
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - tools/global_deep/**
+      - .github/workflows/global-fisheries-deep.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install system and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          python -m pip install --upgrade pip
+          python -m pip install requests lxml pandas geopandas pyogrio shapely pyproj openpyxl pypdf
+      - name: Restore and verify deep converter
+        run: |
+          set -euo pipefail
+          gzip -dc tools/global_deep/deep_supplement.py.gz > /tmp/deep_supplement.py
+          echo '61a8b471615e2761fb7a220c10114d4e10c78612488d20f2d0fb8a048f657c28  /tmp/deep_supplement.py' | sha256sum -c --strict
+          python -m py_compile /tmp/deep_supplement.py
+      - name: Acquire permit, route-position and international-waters data
+        run: |
+          python /tmp/deep_supplement.py --out dist-deep
+      - name: Validate static supplement
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          v=json.loads(Path('dist-deep/global_deep_supplement_validation.json').read_text())
+          assert v['xml_parse_ok']
+          assert v['networklinks_zero']
+          assert v['coordinates_valid']
+          assert v['placemarks'] > 0
+          print(json.dumps(v,indent=2))
+          PY
+      - name: Upload deep static supplement
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fisheries-deep-static-supplement
+          path: dist-deep/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
