@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Build a fully embedded KML snapshot from public marine/fisheries GIS sources.
+
+This script is designed for GitHub Actions, where outbound network access is
+available. It downloads all source geometry, converts it to KML, and emits a
+self-contained KML/KMZ plus a detailed source ledger. It never writes KML
+NetworkLinks.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import html
+import io
+import json
+import logging
+import math
+import os
+import re
+import shutil
+import sys
+import tempfile
+import time
+import traceback
+import urllib.parse
+import zipfile
+from collections import defaultdict
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Mapping, Sequence
+
+import requests
+from lxml import etree
+
+KML_NS = "http://www.opengis.net/kml/2.2"
+GX_NS = "http://www.google.com/kml/ext/2.2"
+NSMAP = {None: KML_NS, "gx": GX_NS}
+K = f"{{{KML_NS}}}"
+GX = f"{{{GX_NS}}}"
+UA = "GlobalFisheriesStaticSnapshot/1.0 (+https://github.com/)"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+LOG = logging.getLogger("global-fisheries-static")
+
+
+@dataclass(frozen=True)
+class Source:
+    id: str
+    region: str
+    country: str
+    title: str
+    category: str
+    publisher: str
+    method: str
+    url: str
+    source_page: str = ""
+    required: bool = True
+    notes: str = ""
+    item_id: str = ""
+    layer_url: str = ""
+    portal_base: str = "https://www.arcgis.com"
+    include_layer_name_regex: str = ""
+    exclude_layer_name_regex: str = ""
+    max_features: int = 0
+
+
+@dataclass
+class SourceResult:
+    id: str
+    region: str
+    country: str
+    title: str
+    category: str
+    publisher: str
+    method: str
+    requested_url: str
+    source_page: str
+    status: str = "pending"
+    retrieved_url: str = ""
+    retrieved_at: str = ""
+    http_status: int | None = None
+    content_type: str = ""
+    bytes_downloaded: int = 0
+    features_embedded: int = 0
+    vertices_embedded: int = 0
+    geometry_types: dict[str, int] = field(default_factory=dict)
+    pagination: str = ""
+    complete: bool = False
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    sha256: str = ""
+    discovered_layers: list[str] = field(default_factory=list)
+
+
+# Existing live sources from the federation, plus additional official GIS layers
+# discovered from national portals. All are converted to embedded geometry.
+SOURCES: list[Source] = [
+    # Europe — EMODnet official-source WFS layers
+    Source("eu_emodnet_tel_bsh", "Europe", "Europe", "Actual submarine telecom cables — BSH CONTIS", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Abshcontiscables&outputFormat=application%2Fjson&srsName=EPSG%3A4326", "https://emodnet.ec.europa.eu/geonetwork/srv/api/records/39ebe289-410b-4a5d-88a4-51bfcde538de"),
+    Source("eu_emodnet_tel_cica", "Europe", "Europe", "Actual submarine telecom cables — CICA", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Acicacables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_tel_shom", "Europe", "Europe", "Actual submarine telecom cables — SHOM", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Ashomcables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_tel_sig", "Europe", "Europe", "Actual submarine telecom cables — SIG", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Asigcables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_tel_malta", "Europe", "Europe", "Actual submarine telecom cables — Malta", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Amaltacables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_tel_rijks", "Europe", "Europe", "Actual submarine telecom cables — Rijkswaterstaat", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Arijkscables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_tel_uk", "Europe", "Europe", "Actual submarine telecom cables — UK fibre cables", "Submarine telecommunications cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Aukfibrecables&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_power_bsh", "Europe", "Europe", "Actual submarine power cables — BSH CONTIS", "Submarine power cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Apcablesbshcontis&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_power_shom", "Europe", "Europe", "Actual submarine power cables — SHOM", "Submarine power cables", "EMOdnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Apcablesshom&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_power_rijks", "Europe", "Europe", "Actual submarine power cables — Rijkswaterstaat", "Submarine power cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Apcablesrijks&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_power_nve", "Europe", "Europe", "Actual submarine power cables — NVE", "Submarine power cables", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Apcablesnve&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_pipelines", "Europe", "Europe", "Offshore pipelines — European official-source aggregation", "Offshore pipelines", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Apipelines&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_wind_points", "Europe", "Europe", "Offshore wind farms — point locations", "Offshore wind farms", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Awindfarms&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_wind_poly", "Europe", "Europe", "Offshore wind farms — project polygons", "Offshore wind farm areas", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Awindfarmspoly&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_wells", "Europe", "Europe", "Offshore oil and gas wells", "Offshore petroleum wells", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Ahydrocarbons&outputFormat=application%2Fjson&srsName=EPSG%3A4326"),
+    Source("eu_emodnet_mpa_poly", "Europe", "Europe", "Marine and coastal protected areas — WDPA polygons", "Protected areas", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Awdpaareas&outputFormat=application%2Fjson&srsName=EPSG%3A4326", max_features=300000),
+    Source("eu_emodnet_mpa_points", "Europe", "Europe", "Marine and coastal protected areas — WDPA point locations", "Protected-area locations", "EMODnet Human Activities", "wfs", "https://ows.emodnet-humanactivities.eu/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=emodnet%3Awdpalocations&outputFormat=application%2Fjson&srsName=EPSG%3A4326", max_features=300000),
+
+    # North America
+    Source("na_nasca_2026", "North America", "United States / Canada / Caribbean", "NASCA member submarine telecom cables — Rev. 01/2026", "Submarine telecommunications cables", "North American Submarine Cable Association", "direct_kml", "https://www.n-a-s-c-a.org/app/download/7198300213/Cables%2B2026.kml?t=1770222674", "https://www.n-a-s-c-a.org/cable-maps-all-regions/"),
+    Source("na_boem_turbines", "North America", "United States", "Offshore wind turbines — proposed and installed", "Offshore wind turbines", "U.S. Bureau of Ocean Energy Management", "arcgis_item", "https://boem-metaport-boem.hub.arcgis.com/api/download/v1/items/648285d6325b427fb12828762c542911/kml?layers=0", item_id="648285d6325b427fb12828762c542911"),
+    Source("na_boem_export_cables", "North America", "United States", "Offshore wind export cables", "Offshore power cables", "U.S. Bureau of Ocean Energy Management", "arcgis_item", "https://boem-metaport-boem.hub.arcgis.com/api/download/v1/items/d90e369be3fe49fea26cb745cbc0584b/kml?layers=0", item_id="d90e369be3fe49fea26cb745cbc0584b"),
+    Source("na_boem_substations", "North America", "United States", "Offshore wind substations", "Offshore substations", "U.S. Bureau of Ocean Energy Management", "arcgis_item", "https://boem-metaport-boem.hub.arcgis.com/api/download/v1/items/1dc4178929e2447a82e369d219b8eb52/kml?layers=0", item_id="1dc4178929e2447a82e369d219b8eb52"),
+    Source("na_boem_interarray", "North America", "United States", "Offshore wind inter-array cables", "Inter-array power cables", "U.S. Bureau of Ocean Energy Management", "arcgis_item", "https://boem-metaport-boem.hub.arcgis.com/api/download/v1/items/12e03c2258084a77b4d2a5c5d756ff1c/kml?layers=0", item_id="12e03c2258084a77b4d2a5c5d756ff1c"),
+    Source("na_boem_phase_areas", "North America", "United States", "Offshore wind project phase areas", "Project development areas", "U.S. Bureau of Ocean Energy Management", "arcgis_item", "https://boem-metaport-boem.hub.arcgis.com/api/download/v1/items/cf077e4139044ab9b038aefcb3165162/kml?layers=0", item_id="cf077e4139044ab9b038aefcb3165162"),
