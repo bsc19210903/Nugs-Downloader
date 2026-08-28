@@ -1,0 +1,66 @@
+name: Build RFMO and ACMA fast static supplement
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - .github/workflows/rfmo-acma-fast-static.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install requests beautifulsoup4 lxml pyshp shapely pyproj pypdf
+      - name: Restore builder and build selected sources
+        run: |
+          base64 --decode tools/global_deep/build_deep_supplement.py.gz.b64 | gzip -dc > /tmp/deep.py
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('deep','/tmp/deep.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          b=m.Builder(Path('dist-rfmo'))
+          for sid,title,url in [
+            ('nafo_divisions','NAFO Divisions','https://www.nafo.int/Portals/0/GIS/Divisions.zip'),
+            ('nafo_footprint','NAFO Bottom-Fishing Footprint','https://www.nafo.int/Portals/0/GIS/Footprint.zip'),
+            ('nafo_vme','NAFO VME Closures','https://www.nafo.int/Portals/0/GIS/VME_Closures.zip'),
+            ('nafo_seamounts','NAFO Seamount Closures','https://www.nafo.int/Portals/0/GIS/Seamounts.zip'),
+            ('neafc_mid_atlantic','NEAFC Mid-Atlantic VME Closures','https://www.neafc.org/system/files/mid-atlantic-vme-closures.zip'),
+            ('neafc_hatton_rockall','NEAFC Hatton–Rockall Closures','https://www.neafc.org/system/files/hatton-rockall-closures.zip'),
+            ('neafc_irminger','NEAFC Irminger Sea Closures','https://www.neafc.org/system/files/irminger-sea-closures.zip'),
+            ('sprfmo_management','SPRFMO 2024 Bottom-Fishing Management Areas','https://sprfmo.int/assets/Fisheries/Bottom-Fishing/Management-Areas/2024-Management-Area-Shape-File.zip'),
+          ]:
+            pub='NAFO' if sid.startswith('nafo') else 'NEAFC' if sid.startswith('neafc') else 'SPRFMO'
+            l=m.Ledger(sid,title,'International / High Seas','High seas',pub,'RFMO fisheries management',url,route_version='current management measure',coverage='management/closure area')
+            b.add(l,lambda l=l,url=url:b.shapefiles_from_zip(l,url,'fishing-closure'))
+          l=m.Ledger('seafo_closed','SEAFO Existing Bottom-Fishing and Closed Areas','International / High Seas','South East Atlantic','SEAFO / SAERI data portal','RFMO closure areas','https://dataportal.saeri.org/en/dataset/existing-bottom-fishing-areas-and-areas-closed-for-fishing-within-the-limits-of-seafo-area',authority_class='official-measure-derived',route_version='CM 30/15 and 31/15-derived',coverage='bottom-fishing/closed areas');b.add(l,lambda:m.seafo(b,l))
+          l=m.Ledger('siofa_spatial','SIOFA Fisheries and Protected VME Spatial Layers','International / High Seas','Southern Indian Ocean','SIOFA','RFMO fisheries and protected VME areas','https://siofa.org/management',route_version='current CMM spatial layers',coverage='fisheries/protected VME');b.add(l,lambda:m.siofa(b,l))
+          for sid,title,url,rv in [
+            ('acma_wa','ACMA Western Australia Submarine Cable Protection Zone','https://www.acma.gov.au/sites/default/files/2019-10/Submarine%20Telecommunications%20Cables%20WA%20Protection%20Zone%20Geographic%20Coordinates.ZIP','declared protection zone'),
+            ('acma_nsw','ACMA New South Wales Submarine Cable Protection Zone','https://www.acma.gov.au/sites/default/files/2019-10/Submarine%20Telecommunications%20Cables%20NSW%20Protection%20Zone%20Geographic%20Coordinates.ZIP','declared protection zone'),
+            ('acma_sspz_2025','ACMA Proposed Southern Sydney Protection-Zone Variation','https://www.acma.gov.au/sites/default/files/2025-06/proposed_%20sspz_%20variation.zip','proposed 2025 protection-zone variation'),
+          ]:
+            l=m.Ledger(sid,title,'Asia / Pacific','Australia','Australian Communications and Media Authority','Submarine cable protection zones',url,route_version=rv,coverage='declared/proposed protection zone and published route geometry');b.add(l,lambda l=l,url=url:b.shapefiles_from_zip(l,url,'cable-protection'))
+          b.finish()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rfmo-acma-fast-static
+          path: |
+            dist-rfmo/global_deep_supplement.kmz
+            dist-rfmo/global_deep_supplement_ledger.json
+            dist-rfmo/global_deep_supplement_ledger.csv
+            dist-rfmo/global_deep_supplement_validation.json
+            dist-rfmo/global_deep_supplement_summary.txt
+          retention-days: 3
+          compression-level: 0
