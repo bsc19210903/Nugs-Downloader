@@ -1,0 +1,153 @@
+name: Finalize global fiber and electric v2 release
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/finalize-global-infrastructure-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out postprocessor
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install postprocessing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests urllib3 lxml mapbox-vector-tile gdown
+
+      - name: Download completed full zoom-6 build artifact
+        run: |
+          set -euo pipefail
+          mkdir -p input-full
+          gh run download 33186337458 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name global-fiber-electric-v2-2026-08-28 \
+            --dir input-full
+          find input-full -maxdepth 2 -type f -printf '%12s  %p\n' | sort -n
+
+      - name: Download and verify operator map sources
+        run: |
+          set -euo pipefail
+          mkdir -p operator-sources
+          python - <<'PY'
+          import gdown
+          p = gdown.download(
+              id='1ulsCVWisT6Yy4_XQET0RN82qeOpoOuc9',
+              output='operator-sources/AllMemberFiber.kmz',
+              quiet=False,
+          )
+          if not p:
+              raise SystemExit('FNA download failed')
+          PY
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output operator-sources/Zayo-Network-Map-2.17.26.kmz \
+            'https://www.dropbox.com/scl/fi/ta5npv2xqodfz6hd5b8nr/Zayo-Network-Map-2.17.26.kmz?rlkey=5bcowqv04w0hkfs5qiu6tygrl&dl=1'
+          unzip -t operator-sources/AllMemberFiber.kmz
+          unzip -t operator-sources/Zayo-Network-Map-2.17.26.kmz
+          ls -lh operator-sources
+
+      - name: Inject FNA and current Zayo geometry, rebuild, and validate
+        run: |
+          set -euo pipefail
+          python tools/global_infrastructure_v2/postprocess_global_infrastructure_v2.py \
+            --input-dir input-full \
+            --output-dir final-release \
+            --builder tools/global_infrastructure_v2/build_global_infrastructure_v2.py \
+            --fna-kmz operator-sources/AllMemberFiber.kmz \
+            --zayo-kmz operator-sources/Zayo-Network-Map-2.17.26.kmz
+          find final-release -maxdepth 1 -type f -printf '%12s  %f\n' | sort -n
+
+      - name: Enforce final release gates and archive integrity
+        run: |
+          set -euo pipefail
+          OUT=final-release
+          test -s "$OUT/global_fiber_electric_v2_broad_research_2026-08-28.kmz"
+          test -s "$OUT/global_fiber_electric_v2_open_government_2026-08-28.kmz"
+          test -s "$OUT/global_fiber_electric_v2_complete_package_2026-08-28.zip"
+          test -s "$OUT/global_fiber_electric_v2_download_bundle_FIXED_2026-08-28.zip"
+          unzip -t "$OUT/global_fiber_electric_v2_broad_research_2026-08-28.kmz"
+          unzip -t "$OUT/global_fiber_electric_v2_open_government_2026-08-28.kmz"
+          unzip -t "$OUT/global_fiber_electric_v2_complete_package_2026-08-28.zip"
+          unzip -t "$OUT/global_fiber_electric_v2_download_bundle_FIXED_2026-08-28.zip"
+          python - <<'PY'
+          import json, pathlib
+          out = pathlib.Path('final-release')
+          validation = json.loads((out/'global_fiber_electric_v2_validation.json').read_text())
+          summary = json.loads((out/'global_fiber_electric_v2_build_summary.json').read_text())
+          print(json.dumps(summary, indent=2))
+          print(json.dumps(validation, indent=2))
+          assert validation['status'] == 'pass'
+          assert validation['release_gates']['fna_member_routes_injected']
+          assert validation['release_gates']['current_zayo_operator_map_injected']
+          assert validation['broad']['all_kml_members_parse']
+          assert validation['open']['all_kml_members_parse']
+          assert int(summary['broad_line_parts']) > 1_300_000
+          PY
+
+      - name: Upload final broad-research KMZ
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-final-broad-map-2026-08-28
+          path: final-release/global_fiber_electric_v2_broad_research_2026-08-28.kmz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload final open-government KMZ
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-final-open-map-2026-08-28
+          path: final-release/global_fiber_electric_v2_open_government_2026-08-28.kmz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload final complete package
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-final-complete-package-2026-08-28
+          path: final-release/global_fiber_electric_v2_complete_package_2026-08-28.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload final recommended bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-final-download-bundle-2026-08-28
+          path: final-release/global_fiber_electric_v2_download_bundle_FIXED_2026-08-28.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload final manifests and validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-fiber-electric-v2-final-manifests-2026-08-28
+          path: |
+            final-release/*.csv
+            final-release/*.json
+            final-release/*.md
+            final-release/SHA256SUMS_global_fiber_electric_v2.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
