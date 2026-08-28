@@ -1,0 +1,59 @@
+name: Discover Malaysia cable Notices to Mariners
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-static-artifact-20260828
+    paths:
+      - .github/workflows/malaysia-cable-ntm-discovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install requests beautifulsoup4
+      - name: Scrape active and historic cable notices
+        run: |
+          python - <<'PY'
+          import json,re,urllib.parse
+          from pathlib import Path
+          import requests
+          from bs4 import BeautifulSoup
+          pages=['https://www.marine.gov.my/elementor-34322/','https://www.marine.gov.my/en/elementor-34337/']
+          out=[]
+          s=requests.Session();s.headers['User-Agent']='Mozilla/5.0'
+          for page in pages:
+            r=s.get(page,timeout=120);r.raise_for_status();soup=BeautifulSoup(r.text,'html.parser')
+            for a in soup.find_all('a',href=True):
+              text=' '.join(a.get_text(' ',strip=True).split());href=urllib.parse.urljoin(page,a['href'])
+              context=' '.join(a.parent.get_text(' ',strip=True).split()) if a.parent else text
+              probe=(text+' '+context+' '+href)
+              if re.search(r'cable|SEA\s*-?\s*ME\s*-?\s*WE|WJBC|ALC|APG|submarine',probe,re.I) and re.search(r'\.pdf(?:$|\?)',href,re.I):
+                out.append({'page':page,'text':text,'context':context,'url':href})
+            # Also inspect raw HTML for PDF paths around cable keywords.
+            for m in re.finditer(r'https?://[^\"\'<> ]+\.pdf|/wp-content/[^\"\'<> ]+\.pdf',r.text,re.I):
+              href=urllib.parse.urljoin(page,m.group(0).replace('\\/','/'))
+              start=max(0,m.start()-500);end=min(len(r.text),m.end()+500);ctx=BeautifulSoup(r.text[start:end],'html.parser').get_text(' ',strip=True)
+              if re.search(r'cable|SEA\s*-?\s*ME\s*-?\s*WE|WJBC|ALC|APG|submarine',ctx,re.I):out.append({'page':page,'text':'','context':' '.join(ctx.split()),'url':href})
+          unique=[];seen=set()
+          for x in out:
+            if x['url'] in seen:continue
+            seen.add(x['url']);unique.append(x)
+          Path('malaysia-cable-notices.json').write_text(json.dumps(unique,ensure_ascii=False,indent=2))
+          print(json.dumps(unique,ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: malaysia-cable-notices
+          path: malaysia-cable-notices.json
+          retention-days: 3
