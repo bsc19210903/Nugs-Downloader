@@ -26,9 +26,9 @@ jobs:
         run: |
           base64 --decode tools/global_deep/build_deep_supplement.py.gz.b64 | gzip -dc > /tmp/deep.py
           python - <<'PY'
-          import importlib.util
+          import importlib.util,sys
           from pathlib import Path
-          spec=importlib.util.spec_from_file_location('deep','/tmp/deep.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          spec=importlib.util.spec_from_file_location('deep','/tmp/deep.py');m=importlib.util.module_from_spec(spec);sys.modules['deep']=m;spec.loader.exec_module(m)
           b=m.Builder(Path('dist-rfmo'))
           for sid,title,url in [
             ('nafo_divisions','NAFO Divisions','https://www.nafo.int/Portals/0/GIS/Divisions.zip'),
