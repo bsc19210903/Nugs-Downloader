@@ -1,0 +1,35 @@
+name: Discover priority fisheries GIS sources
+
+on:
+  push:
+    branches:
+      - codex/global-fisheries-priority-discovery-20260828
+    paths:
+      - tools/fisheries-discovery/**
+      - .github/workflows/fisheries-priority-discovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install requests beautifulsoup4
+      - name: Run discovery
+        run: python tools/fisheries-discovery/discover_priority_sources.py --out discovery
+      - name: Upload discovery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: priority-fisheries-source-discovery
+          path: discovery/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
