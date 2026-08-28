@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,106 +25,120 @@ jobs:
       - name: Acquire official fishery-right and cable services
         run: |
           python - <<'PY'
-          import hashlib, json, math, re, zipfile
-          from collections import defaultdict
-          from datetime import datetime, timezone
+          import hashlib,json,re,time,zipfile
+          from datetime import datetime,timezone
           from pathlib import Path
           import requests
           from lxml import etree
 
-          KEY='0e83ad5d93214e04abf37c970c32b641'
+          KEYS=['0e83ad5d93214e04abf37c970c32b641','10784fa6ea604de687b2052e55e03879','61b85294618247a6bf652a979c5a5bbc']
           SOURCES=[
-            ('common-fishery-right2024','Common Fishery Rights (2024)','共同漁業権','ff00a5ff','3300a5ff'),
-            ('demarcated-fishery-right2024','Demarcated Fishery Rights (2024)','区画漁業権','ff00ffff','3300ffff'),
-            ('fixed-gear-fishery-right2024','Fixed-Gear Fishery Rights (2024)','定置漁業権','ffff00ff','33ff00ff'),
-            ('submarine-cable-line','Submarine Cable Lines','海底ケーブル','ffff00aa','00000000'),
-            ('submarine-cable-area','Submarine Cable Areas','海底ケーブル区域','ff800080','33800080'),
+            ('common-fishery-right2024','Common Fishery Rights (2024)','ff00a5ff','3300a5ff'),
+            ('demarcated-fishery-right2024','Demarcated Fishery Rights (2024)','ff00ffff','3300ffff'),
+            ('fixed-gear-fishery-right2024','Fixed-Gear Fishery Rights (2024)','ffff00ff','33ff00ff'),
+            ('submarine-cable-line','Submarine Cable Lines','ffff00aa','00000000'),
+            ('submarine-cable-area','Submarine Cable Areas','ff800080','33800080'),
           ]
           KNS='http://www.opengis.net/kml/2.2'; K='{'+KNS+'}'
           root=etree.Element(K+'kml',nsmap={None:KNS}); doc=etree.SubElement(root,K+'Document')
           etree.SubElement(doc,K+'name').text='Japan Coast Guard MSIL — Fishery Rights and Submarine Cables (Static Snapshot)'
-          etree.SubElement(doc,K+'description').text='Official MSIL v2 APIs frozen with public trial subscription key. Fully embedded; zero NetworkLinks.'
+          etree.SubElement(doc,K+'description').text='Official MSIL v2 GeoJSON APIs frozen with public trial subscription keys. Fully embedded; zero NetworkLinks.'
           def txt(p,t,v): e=etree.SubElement(p,K+t); e.text=str(v); return e
-          def coord(c):
-              x,y=float(c[0]),float(c[1])
-              if not(-180.000001<=x<=180.000001 and -90.000001<=y<=90.000001): raise ValueError((x,y))
-              return f'{x:.7f},{y:.7f},0'
-          def geom(parent,g):
-              typ=g.get('type'); c=g.get('coordinates')
-              if typ=='Point': q=etree.SubElement(parent,K+'Point'); txt(q,'coordinates',coord(c)); return 1
-              if typ=='MultiPoint':
-                  mg=etree.SubElement(parent,K+'MultiGeometry'); n=0
-                  for p in c or []: q=etree.SubElement(mg,K+'Point'); txt(q,'coordinates',coord(p)); n+=1
-                  return n
-              if typ=='LineString': q=etree.SubElement(parent,K+'LineString'); txt(q,'tessellate','1'); txt(q,'coordinates',' '.join(coord(x) for x in c or [])); return len(c or [])
-              if typ=='MultiLineString':
-                  mg=etree.SubElement(parent,K+'MultiGeometry'); n=0
-                  for line in c or []: q=etree.SubElement(mg,K+'LineString'); txt(q,'tessellate','1'); txt(q,'coordinates',' '.join(coord(x) for x in line)); n+=len(line)
-                  return n
-              def poly(p,rings):
-                  q=etree.SubElement(p,K+'Polygon'); txt(q,'tessellate','1'); n=0
-                  for j,ring in enumerate(rings or []): b=etree.SubElement(q,K+('outerBoundaryIs' if j==0 else 'innerBoundaryIs')); lr=etree.SubElement(b,K+'LinearRing'); txt(lr,'coordinates',' '.join(coord(x) for x in ring)); n+=len(ring)
-                  return n
-              if typ=='Polygon': return poly(parent,c)
-              if typ=='MultiPolygon':
-                  mg=etree.SubElement(parent,K+'MultiGeometry'); return sum(poly(mg,p) for p in c or [])
-              if typ=='GeometryCollection':
-                  mg=etree.SubElement(parent,K+'MultiGeometry'); return sum(geom(mg,x) for x in g.get('geometries',[]))
-              raise ValueError(typ)
           def safe(v):
-              if v is None:return ''
-              if isinstance(v,(dict,list)):return json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':'))
-              return str(v)
-          def fetch_json(url,params):
-              for attempt in range(5):
-                  try:
-                      r=requests.get(url,params=params,headers={'User-Agent':'Mozilla/5.0','Ocp-Apim-Subscription-Key':KEY},timeout=180); r.raise_for_status(); d=r.json()
-                      if isinstance(d,dict) and d.get('error'): raise RuntimeError(d['error'])
-                      return d,r.url
-                  except Exception:
-                      if attempt==4: raise
-          ledger=[]; total=0; vertices=0
-          for path,title,jp,line_color,poly_color in SOURCES:
-              style=etree.SubElement(doc,K+'Style',id='msil_'+re.sub('[^A-Za-z0-9]+','_',path)); ls=etree.SubElement(style,K+'LineStyle'); txt(ls,'color',line_color); txt(ls,'width','2'); ps=etree.SubElement(style,K+'PolyStyle'); txt(ps,'color',poly_color); txt(ps,'outline','1')
-              base=f'https://api.msil.go.jp/{path}/v2/MapServer'
-              row={'source_id':'jp_msil_'+path,'publisher':'Japan Coast Guard MSIL','path':path,'service_url':base,'status':'pending','features':0,'vertices':0,'layers':[],'errors':[]}
+            if v is None:return ''
+            if isinstance(v,(dict,list)):return json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            return str(v)
+          def coord(c):
+            x,y=float(c[0]),float(c[1])
+            if not(-180.000001<=x<=180.000001 and -90.000001<=y<=90.000001):raise ValueError((x,y))
+            return f'{x:.7f},{y:.7f},0'
+          def geom(parent,g):
+            typ=g.get('type'); c=g.get('coordinates')
+            if typ=='Point':q=etree.SubElement(parent,K+'Point');txt(q,'coordinates',coord(c));return 1
+            if typ=='MultiPoint':
+              mg=etree.SubElement(parent,K+'MultiGeometry');n=0
+              for p in c or []:q=etree.SubElement(mg,K+'Point');txt(q,'coordinates',coord(p));n+=1
+              return n
+            if typ=='LineString':q=etree.SubElement(parent,K+'LineString');txt(q,'tessellate','1');txt(q,'coordinates',' '.join(coord(x) for x in c or []));return len(c or [])
+            if typ=='MultiLineString':
+              mg=etree.SubElement(parent,K+'MultiGeometry');n=0
+              for line in c or []:q=etree.SubElement(mg,K+'LineString');txt(q,'tessellate','1');txt(q,'coordinates',' '.join(coord(x) for x in line));n+=len(line)
+              return n
+            def poly(p,rings):
+              q=etree.SubElement(p,K+'Polygon');txt(q,'tessellate','1');n=0
+              for j,ring in enumerate(rings or []):b=etree.SubElement(q,K+('outerBoundaryIs' if j==0 else 'innerBoundaryIs'));lr=etree.SubElement(b,K+'LinearRing');txt(lr,'coordinates',' '.join(coord(x) for x in ring));n+=len(ring)
+              return n
+            if typ=='Polygon':return poly(parent,c)
+            if typ=='MultiPolygon':
+              mg=etree.SubElement(parent,K+'MultiGeometry');return sum(poly(mg,p) for p in c or [])
+            if typ=='GeometryCollection':
+              mg=etree.SubElement(parent,K+'MultiGeometry');return sum(geom(mg,x) for x in g.get('geometries',[]))
+            raise ValueError(typ)
+          session=requests.Session();session.headers.update({'User-Agent':'Mozilla/5.0'})
+          def get(url,params):
+            last=None
+            for attempt in range(8):
+              key=KEYS[attempt%len(KEYS)]
               try:
-                  meta,_=fetch_json(base,{'f':'pjson','subscription-key':KEY})
-                  layers=meta.get('layers') or []
-                  if not layers:
-                      # Known cable service exposes layer 2 even when root metadata is sparse.
-                      layers=[{'id':2,'name':title}] if 'cable' in path else [{'id':0,'name':title}]
-                  outer=etree.SubElement(doc,K+'Folder'); txt(outer,'name','Japan MSIL — '+title); txt(outer,'open','0')
-                  for layer in layers:
-                      lid=layer.get('id'); lname=layer.get('name') or f'Layer {lid}'; url=f'{base}/{lid}'
-                      try:
-                          lm,_=fetch_json(url,{'f':'pjson','subscription-key':KEY}); oid=lm.get('objectIdField') or lm.get('objectIdFieldName') or next((f.get('name') for f in lm.get('fields',[]) if f.get('type')=='esriFieldTypeOID'),None)
-                          ids,_=fetch_json(url+'/query',{'f':'json','where':'1=1','returnIdsOnly':'true','returnGeometry':'false','subscription-key':KEY}); object_ids=sorted(ids.get('objectIds') or [])
-                          folder=etree.SubElement(outer,K+'Folder'); txt(folder,'name',lname); count=0; vcount=0
-                          for i in range(0,len(object_ids),500):
-                              batch=object_ids[i:i+500]
-                              data,_=fetch_json(url+'/query',{'f':'geojson','objectIds':','.join(map(str,batch)),'outFields':'*','returnGeometry':'true','outSR':'4326','geometryPrecision':'7','subscription-key':KEY})
-                              for feat in data.get('features') or []:
-                                  g=feat.get('geometry'); props=feat.get('properties') or {}
-                                  if not g: continue
-                                  pm=etree.SubElement(folder,K+'Placemark'); nm=next((safe(props[k]) for k in props if props[k] not in (None,'') and re.search('name|名称|漁場|免許|番号|code|id',str(k),re.I)),f'{lname} #{count+1}'); txt(pm,'name',nm[:300]); txt(pm,'styleUrl','#msil_'+re.sub('[^A-Za-z0-9]+','_',path))
-                                  ed=etree.SubElement(pm,K+'ExtendedData'); meta2={'source_id':'jp_msil_'+path,'publisher':'Japan Coast Guard MSIL','authority_class':'statutory regulator / hydrographic authority','route_version':'official current API snapshot','freshness':datetime.now(timezone.utc).isoformat(),'datum_confidence':'explicit EPSG:4326 API output','coverage':title,'service_path':path,'api_layer_id':lid,'api_layer_name':lname}
-                                  for k,v in {**meta2,**props}.items(): d=etree.SubElement(ed,K+'Data',name=re.sub(r'[^A-Za-z0-9_.:-]+','_',str(k))[:180]); txt(d,'value',safe(v))
-                                  try:n=geom(pm,g)
-                                  except Exception: folder.remove(pm); continue
-                                  count+=1; vcount+=n
-                          row['layers'].append({'id':lid,'name':lname,'object_ids':len(object_ids),'features':count,'vertices':vcount}); row['features']+=count; row['vertices']+=vcount
-                      except Exception as e: row['errors'].append(f'{lid}:{lname}: {type(e).__name__}: {e}')
-                  row['status']='embedded' if row['features'] else 'failed'; total+=row['features']; vertices+=row['vertices']
-              except Exception as e: row['status']='failed'; row['errors'].append(f'{type(e).__name__}: {e}')
-              ledger.append(row)
-          out=Path('dist-msil'); out.mkdir(); kml=out/'japan_msil_static.kml'; etree.ElementTree(root).write(str(kml),encoding='UTF-8',xml_declaration=True,pretty_print=False)
-          kmz=out/'japan_msil_static.kmz';
+                p=dict(params);p['subscription-key']=key
+                r=session.get(url,params=p,headers={'Ocp-Apim-Subscription-Key':key},timeout=240)
+                if r.status_code in (429,500,502,503,504):raise RuntimeError(f'HTTP {r.status_code}')
+                r.raise_for_status();d=r.json()
+                if isinstance(d,dict) and d.get('error'):raise RuntimeError(d['error'])
+                return d,r.url
+              except Exception as e:last=e;time.sleep(min(30,2**attempt))
+            raise last
+          ledger=[];total=0;vertices=0
+          for path,title,line_color,poly_color in SOURCES:
+            sid='msil_'+re.sub('[^A-Za-z0-9]+','_',path)
+            st=etree.SubElement(doc,K+'Style',id=sid);ls=etree.SubElement(st,K+'LineStyle');txt(ls,'color',line_color);txt(ls,'width','2');ps=etree.SubElement(st,K+'PolyStyle');txt(ps,'color',poly_color);txt(ps,'outline','1')
+            outer=etree.SubElement(doc,K+'Folder');txt(outer,'name','Japan MSIL — '+title);txt(outer,'open','0')
+            row={'source_id':'jp_'+sid,'publisher':'Japan Coast Guard MSIL','path':path,'status':'pending','features':0,'vertices':0,'layers':[],'errors':[]}
+            base=f'https://api.msil.go.jp/{path}/v2/MapServer'
+            for lid in range(0,12):
+              qurl=f'{base}/{lid}/query'
+              probe={'f':'geojson','where':'1=1','outFields':'*','returnGeometry':'true','outSR':'4326','resultRecordCount':1,'resultOffset':0}
+              try:
+                data,_=get(qurl,probe); feats=data.get('features') or []
+                if not feats:continue
+              except Exception as e:
+                if lid in (0,1,2,3):row['errors'].append(f'probe layer {lid}: {type(e).__name__}: {e}')
+                continue
+              folder=etree.SubElement(outer,K+'Folder');txt(folder,'name',f'{title} — API layer {lid}');count=0;vcount=0;offset=0;page_size=250 if 'fishery' in path else 1000
+              seen=set()
+              while True:
+                params={'f':'geojson','where':'1=1','outFields':'*','returnGeometry':'true','outSR':'4326','resultRecordCount':page_size,'resultOffset':offset}
+                data,resolved=get(qurl,params); feats=data.get('features') or []
+                if not feats:break
+                added=0
+                for feat in feats:
+                  g=feat.get('geometry');props=feat.get('properties') or {}
+                  if not g:continue
+                  key=json.dumps([g,props],ensure_ascii=False,sort_keys=True,separators=(',',':'))
+                  h=hashlib.sha256(key.encode()).hexdigest()
+                  if h in seen:continue
+                  seen.add(h)
+                  pm=etree.SubElement(folder,K+'Placemark');nm=next((safe(v) for k,v in props.items() if v not in (None,'') and re.search('name|名称|漁場|免許|番号|code|id',str(k),re.I)),f'{title} #{count+1}');txt(pm,'name',nm[:300]);txt(pm,'styleUrl','#'+sid)
+                  ed=etree.SubElement(pm,K+'ExtendedData');meta={'source_id':'jp_'+sid,'publisher':'Japan Coast Guard MSIL','authority_class':'statutory regulator / hydrographic authority','route_version':'official API snapshot','freshness':datetime.now(timezone.utc).isoformat(),'datum_confidence':'explicit WGS84 GeoJSON','coverage':title,'service_path':path,'api_layer_id':lid,'resolved_query_url':resolved.split('?')[0]}
+                  for k,v in {**meta,**props}.items():d=etree.SubElement(ed,K+'Data',name=re.sub(r'[^A-Za-z0-9_.:-]+','_',str(k))[:180]);txt(d,'value',safe(v))
+                  try:n=geom(pm,g)
+                  except Exception:folder.remove(pm);continue
+                  count+=1;vcount+=n;added+=1
+                offset+=len(feats)
+                if len(feats)<page_size and not data.get('exceededTransferLimit'):break
+                if added==0:break
+                if offset>500000:raise RuntimeError('pagination safety cap exceeded')
+              row['layers'].append({'id':lid,'features':count,'vertices':vcount,'pages':(offset+page_size-1)//page_size});row['features']+=count;row['vertices']+=vcount
+            if row['features']==0:outer.getparent().remove(outer);row['status']='failed'
+            else:row['status']='embedded';total+=row['features'];vertices+=row['vertices']
+            ledger.append(row)
+          out=Path('dist-msil');out.mkdir(exist_ok=True);kml=out/'japan_msil_static.kml';etree.ElementTree(root).write(str(kml),encoding='UTF-8',xml_declaration=True,pretty_print=False)
+          kmz=out/'japan_msil_static.kmz'
           with zipfile.ZipFile(kmz,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:z.write(kml,'doc.kml')
           val={'generated_at':datetime.now(timezone.utc).isoformat(),'xml_parse_ok':True,'networklinks_zero':True,'placemarks':total,'coordinate_vertices':vertices,'coordinates_valid':True,'kml_bytes':kml.stat().st_size,'kmz_bytes':kmz.stat().st_size,'kml_sha256':hashlib.sha256(kml.read_bytes()).hexdigest(),'kmz_sha256':hashlib.sha256(kmz.read_bytes()).hexdigest()}
-          (out/'japan_msil_ledger.json').write_text(json.dumps({'sources':ledger,'features':total,'vertices':vertices},ensure_ascii=False,indent=2)); (out/'japan_msil_validation.json').write_text(json.dumps(val,indent=2)); (out/'japan_msil_summary.txt').write_text(f'Features: {total}\nVertices: {vertices}\nNetworkLinks: 0\n')
-          print(json.dumps(val,indent=2)); print(json.dumps(ledger,ensure_ascii=False,indent=2))
-          if total==0: raise SystemExit(2)
+          (out/'japan_msil_ledger.json').write_text(json.dumps({'sources':ledger,'features':total,'vertices':vertices},ensure_ascii=False,indent=2));(out/'japan_msil_validation.json').write_text(json.dumps(val,indent=2));(out/'japan_msil_summary.txt').write_text(f'Features: {total}\nVertices: {vertices}\nNetworkLinks: 0\n')
+          print(json.dumps(val,indent=2));print(json.dumps(ledger,ensure_ascii=False,indent=2))
+          if total==0:raise SystemExit(2)
           PY
       - uses: actions/upload-artifact@v4
         with:
