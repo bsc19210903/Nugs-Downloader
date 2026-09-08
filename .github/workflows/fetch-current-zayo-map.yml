@@ -1,0 +1,36 @@
+name: Fetch current public Zayo KMZ
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/fetch-current-zayo-map.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download NCTC-linked Zayo metro and longhaul map
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            --user-agent 'Mozilla/5.0' \
+            --output Zayo-Metro-and-Longhaul-Fiber-Map.kmz \
+            'https://www.dropbox.com/s/4iimyveur876t86/Zayo%20Metro%20and%20Longhaul%20Fiber%20Map.kmz?dl=1'
+          file Zayo-Metro-and-Longhaul-Fiber-Map.kmz
+          ls -lh Zayo-Metro-and-Longhaul-Fiber-Map.kmz
+          unzip -t Zayo-Metro-and-Longhaul-Fiber-Map.kmz
+      - name: Upload verified Zayo KMZ
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-public-zayo-metro-longhaul-kmz
+          path: Zayo-Metro-and-Longhaul-Fiber-Map.kmz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
