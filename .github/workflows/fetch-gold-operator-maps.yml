@@ -30,35 +30,48 @@ jobs:
           unzip -q operator-maps/Bluebird-Public-Network-Q1-2026.zip -d operator-maps/bluebird
           find operator-maps -maxdepth 3 -type f -printf '%12s  %p\n' | sort -n
 
-      - name: Validate KML and KMZ contents
+      - name: Validate and normalize KML/KMZ contents
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          import zipfile
-          import xml.etree.ElementTree as ET
+          import json, shutil, tempfile, zipfile
+          from lxml import etree
 
           root = Path('operator-maps')
+          parser = etree.XMLParser(huge_tree=True, recover=True)
+          report = []
+
           viaero = root / 'Viaero-Fiber-routes-2026-02-12.kml'
-          ET.parse(viaero)
-          candidates = list((root / 'bluebird').rglob('*.kmz')) + list((root / 'bluebird').rglob('*.kml'))
+          viaero_root = etree.parse(str(viaero), parser)
+          viaero_root.write(str(root / 'Viaero-Fiber-routes-2026-02-12.normalized.kml'), encoding='UTF-8', xml_declaration=True)
+          report.append({'file': str(viaero), 'recoverable': True, 'normalized': True})
+
+          candidates = [p for p in (root / 'bluebird').rglob('*.kmz') if '__MACOSX' not in p.parts and not p.name.startswith('._')]
           if not candidates:
-              raise SystemExit('Bluebird archive contained no KML/KMZ')
+              raise SystemExit('Bluebird archive contained no usable KMZ')
           for path in candidates:
-              if path.suffix.lower() == '.kmz':
-                  with zipfile.ZipFile(path) as archive:
-                      bad = archive.testzip()
-                      if bad:
-                          raise SystemExit(f'Corrupt Bluebird member: {bad}')
-                      kmls = [n for n in archive.namelist() if n.lower().endswith('.kml')]
-                      if not kmls:
-                          raise SystemExit(f'No KML in {path}')
+              with zipfile.ZipFile(path) as archive:
+                  bad = archive.testzip()
+                  if bad:
+                      raise SystemExit(f'Corrupt Bluebird member: {bad}')
+                  kmls = [n for n in archive.namelist() if n.lower().endswith('.kml') and '__MACOSX' not in n and not Path(n).name.startswith('._')]
+                  if not kmls:
+                      raise SystemExit(f'No KML in {path}')
+                  with tempfile.TemporaryDirectory() as td:
+                      td = Path(td)
+                      archive.extractall(td)
                       for name in kmls:
-                          ET.fromstring(archive.read(name))
-              else:
-                  ET.parse(path)
-          print('Validated:', viaero, *candidates, sep='\n')
+                          source = td / name
+                          tree = etree.parse(str(source), parser)
+                          normalized = source.with_name(source.stem + '.normalized.kml')
+                          tree.write(str(normalized), encoding='UTF-8', xml_declaration=True)
+                          shutil.copy2(normalized, root / 'bluebird' / 'Bluebird-Public-Network-Q1-2026.normalized.kml')
+                          report.append({'file': str(path), 'member': name, 'recoverable': True, 'normalized': True})
+                          break
+          (root / 'VALIDATION_REPORT.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          print(json.dumps(report, indent=2))
           PY
 
       - name: Record provenance and hashes
@@ -71,7 +84,7 @@ jobs:
             echo 'viaero_download=https://viaerofiber.com/hubfs/vfn_routes_12Feb2026.kml?hsLang=en'
             echo 'bluebird_source=https://bluebirdfiber.com/our-network/'
             echo 'bluebird_download=https://bluebirdfiber.com/wp-content/uploads/2026/03/BBF-Public-Network-Q12026.kmz_.zip'
-            sha256sum operator-maps/Viaero-Fiber-routes-2026-02-12.kml operator-maps/Bluebird-Public-Network-Q1-2026.zip
+            find operator-maps -type f -not -path '*/__MACOSX/*' -print0 | sort -z | xargs -0 sha256sum
           } > operator-maps/SOURCE_RECEIPT.txt
 
       - name: Upload operator sources
