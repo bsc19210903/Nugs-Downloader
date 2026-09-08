@@ -1,0 +1,84 @@
+name: Fetch gold operator map sources
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/fetch-gold-operator-maps.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download public operator maps
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p operator-maps/bluebird
+          curl --fail --location --retry 5 --retry-all-errors \
+            -o operator-maps/Viaero-Fiber-routes-2026-02-12.kml \
+            'https://viaerofiber.com/hubfs/vfn_routes_12Feb2026.kml?hsLang=en'
+          curl --fail --location --retry 5 --retry-all-errors \
+            -o operator-maps/Bluebird-Public-Network-Q1-2026.zip \
+            'https://bluebirdfiber.com/wp-content/uploads/2026/03/BBF-Public-Network-Q12026.kmz_.zip'
+          unzip -q operator-maps/Bluebird-Public-Network-Q1-2026.zip -d operator-maps/bluebird
+          find operator-maps -maxdepth 3 -type f -printf '%12s  %p\n' | sort -n
+
+      - name: Validate KML and KMZ contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          import xml.etree.ElementTree as ET
+
+          root = Path('operator-maps')
+          viaero = root / 'Viaero-Fiber-routes-2026-02-12.kml'
+          ET.parse(viaero)
+          candidates = list((root / 'bluebird').rglob('*.kmz')) + list((root / 'bluebird').rglob('*.kml'))
+          if not candidates:
+              raise SystemExit('Bluebird archive contained no KML/KMZ')
+          for path in candidates:
+              if path.suffix.lower() == '.kmz':
+                  with zipfile.ZipFile(path) as archive:
+                      bad = archive.testzip()
+                      if bad:
+                          raise SystemExit(f'Corrupt Bluebird member: {bad}')
+                      kmls = [n for n in archive.namelist() if n.lower().endswith('.kml')]
+                      if not kmls:
+                          raise SystemExit(f'No KML in {path}')
+                      for name in kmls:
+                          ET.fromstring(archive.read(name))
+              else:
+                  ET.parse(path)
+          print('Validated:', viaero, *candidates, sep='\n')
+          PY
+
+      - name: Record provenance and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'accessed_utc='$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            echo 'viaero_source=https://viaerofiber.com/network/map'
+            echo 'viaero_download=https://viaerofiber.com/hubfs/vfn_routes_12Feb2026.kml?hsLang=en'
+            echo 'bluebird_source=https://bluebirdfiber.com/our-network/'
+            echo 'bluebird_download=https://bluebirdfiber.com/wp-content/uploads/2026/03/BBF-Public-Network-Q12026.kmz_.zip'
+            sha256sum operator-maps/Viaero-Fiber-routes-2026-02-12.kml operator-maps/Bluebird-Public-Network-Q1-2026.zip
+          } > operator-maps/SOURCE_RECEIPT.txt
+
+      - name: Upload operator sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-public-operator-maps-2026-09-08
+          path: operator-maps
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
