@@ -21,55 +21,78 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from __future__ import annotations
-          import hashlib, json, time, urllib.parse, urllib.request, zipfile
+          import hashlib, json, time, zipfile
           from pathlib import Path
+          import requests
+          from requests.adapters import HTTPAdapter
+          from urllib3.util.retry import Retry
 
           base = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Power_Transmission_Lines/FeatureServer/0'
           out = Path('gold-hifld')
-          out.mkdir()
+          out.mkdir(exist_ok=True)
 
-          def get_json(url, params):
-              query = urllib.parse.urlencode(params)
-              req = urllib.request.Request(url + '?' + query, headers={'User-Agent':'GoldInfrastructureMap/1.0'})
-              for attempt in range(6):
+          session = requests.Session()
+          retry = Retry(total=7, connect=7, read=7, status=7, backoff_factor=1,
+                        status_forcelist=(408, 425, 429, 500, 502, 503, 504),
+                        allowed_methods=frozenset({'GET','POST'}), respect_retry_after_header=True)
+          session.mount('https://', HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=8))
+          session.headers.update({'User-Agent':'GoldInfrastructureMap/1.0'})
+
+          def request_json(method, url, params):
+              for attempt in range(7):
                   try:
-                      with urllib.request.urlopen(req, timeout=180) as response:
-                          return json.load(response)
+                      if method == 'POST':
+                          response = session.post(url, data=params, timeout=(30, 300))
+                      else:
+                          response = session.get(url, params=params, timeout=(30, 300))
+                      response.raise_for_status()
+                      data = response.json()
+                      if data.get('error'):
+                          raise RuntimeError(data['error'])
+                      return data
                   except Exception:
-                      if attempt == 5: raise
-                      time.sleep(2 ** attempt)
+                      if attempt == 6:
+                          raise
+                      time.sleep(min(60, 2 ** attempt))
 
-          meta = get_json(base, {'f':'json'})
-          ids = get_json(base + '/query', {'where':'1=1','returnIdsOnly':'true','f':'json'}).get('objectIds') or []
-          ids = sorted(set(int(x) for x in ids))
+          meta = request_json('GET', base, {'f':'json'})
+          oid_field = meta.get('objectIdField') or 'OBJECTID_1'
+          id_payload = request_json('POST', base + '/query', {
+              'where':'1=1','returnIdsOnly':'true','f':'json'
+          })
+          ids = sorted(set(int(x) for x in (id_payload.get('objectIds') or [])))
           if not ids:
               raise SystemExit('No HIFLD object IDs returned')
 
           features = []
+          returned_ids = set()
           chunk_size = 500
           for pos in range(0, len(ids), chunk_size):
               chunk = ids[pos:pos+chunk_size]
-              data = get_json(base + '/query', {
+              data = request_json('POST', base + '/query', {
                   'objectIds': ','.join(map(str, chunk)),
                   'outFields': '*', 'returnGeometry': 'true',
                   'outSR': '4326', 'f': 'json',
               })
-              if data.get('error'):
-                  raise RuntimeError(data['error'])
               for feat in data.get('features') or []:
                   attrs = feat.get('attributes') or {}
+                  oid = attrs.get(oid_field)
+                  if oid is not None:
+                      returned_ids.add(int(oid))
                   geom = feat.get('geometry') or {}
                   paths = geom.get('paths') or []
                   if not paths:
                       continue
                   coordinates = paths[0] if len(paths) == 1 else paths
                   gtype = 'LineString' if len(paths) == 1 else 'MultiLineString'
-                  features.append({'type':'Feature','id':attrs.get(meta.get('objectIdField') or 'OBJECTID'),
+                  features.append({'type':'Feature','id':oid,
                                    'properties':attrs,
                                    'geometry':{'type':gtype,'coordinates':coordinates}})
               if pos % 5000 == 0:
-                  print(f'{pos:,}/{len(ids):,} object IDs; {len(features):,} geometries', flush=True)
+                  print(f'{min(pos+chunk_size, len(ids)):,}/{len(ids):,} object IDs; {len(features):,} geometries', flush=True)
 
+          missing_ids = sorted(set(ids) - returned_ids)
+          duplicate_return_count = len(returned_ids) - len(ids)
           fc = {'type':'FeatureCollection','name':'HIFLD US Electric Power Transmission Lines — complete public snapshot',
                 'source_url':base,'retrieved_at':'2026-09-08','features':features}
           geo = out / 'HIFLD_US_Electric_Power_Transmission_Lines_complete_2026-09-08.geojson'
@@ -77,17 +100,24 @@ jobs:
           digest = hashlib.sha256(geo.read_bytes()).hexdigest()
           manifest = {
               'source_url': base,
+              'service_item_id': meta.get('serviceItemId'),
               'retrieved_at': '2026-09-08',
               'reported_object_ids': len(ids),
+              'returned_object_ids': len(returned_ids),
               'geometry_features_written': len(features),
-              'object_id_field': meta.get('objectIdField'),
+              'null_geometry_records': len(returned_ids) - len(features),
+              'missing_object_ids_count': len(missing_ids),
+              'missing_object_ids_sample': missing_ids[:25],
+              'duplicate_return_count': duplicate_return_count,
+              'object_id_field': oid_field,
               'service_name': meta.get('name'),
               'service_description': meta.get('description'),
               'copyright_text': meta.get('copyrightText'),
+              'data_last_edit_date_epoch_ms': (meta.get('editingInfo') or {}).get('dataLastEditDate'),
               'spatial_reference_requested': 4326,
               'sha256': digest,
-              'completeness_gate': len(features) == len(ids),
-              'license_basis': 'U.S. government public data; upstream metadata and applicable terms control',
+              'completeness_gate': len(returned_ids) == len(ids) and not missing_ids,
+              'license_basis': 'U.S. government/public ArcGIS source; upstream metadata and applicable terms control',
           }
           if not manifest['completeness_gate']:
               raise SystemExit(f'Completeness gate failed: {manifest}')
