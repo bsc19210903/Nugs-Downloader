@@ -1,0 +1,111 @@
+name: Fetch gold full HIFLD transmission snapshot
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/fetch-gold-full-hifld-transmission.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Fetch complete public HIFLD transmission service
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, time, urllib.parse, urllib.request, zipfile
+          from pathlib import Path
+
+          base = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Power_Transmission_Lines/FeatureServer/0'
+          out = Path('gold-hifld')
+          out.mkdir()
+
+          def get_json(url, params):
+              query = urllib.parse.urlencode(params)
+              req = urllib.request.Request(url + '?' + query, headers={'User-Agent':'GoldInfrastructureMap/1.0'})
+              for attempt in range(6):
+                  try:
+                      with urllib.request.urlopen(req, timeout=180) as response:
+                          return json.load(response)
+                  except Exception:
+                      if attempt == 5: raise
+                      time.sleep(2 ** attempt)
+
+          meta = get_json(base, {'f':'json'})
+          ids = get_json(base + '/query', {'where':'1=1','returnIdsOnly':'true','f':'json'}).get('objectIds') or []
+          ids = sorted(set(int(x) for x in ids))
+          if not ids:
+              raise SystemExit('No HIFLD object IDs returned')
+
+          features = []
+          chunk_size = 500
+          for pos in range(0, len(ids), chunk_size):
+              chunk = ids[pos:pos+chunk_size]
+              data = get_json(base + '/query', {
+                  'objectIds': ','.join(map(str, chunk)),
+                  'outFields': '*', 'returnGeometry': 'true',
+                  'outSR': '4326', 'f': 'json',
+              })
+              if data.get('error'):
+                  raise RuntimeError(data['error'])
+              for feat in data.get('features') or []:
+                  attrs = feat.get('attributes') or {}
+                  geom = feat.get('geometry') or {}
+                  paths = geom.get('paths') or []
+                  if not paths:
+                      continue
+                  coordinates = paths[0] if len(paths) == 1 else paths
+                  gtype = 'LineString' if len(paths) == 1 else 'MultiLineString'
+                  features.append({'type':'Feature','id':attrs.get(meta.get('objectIdField') or 'OBJECTID'),
+                                   'properties':attrs,
+                                   'geometry':{'type':gtype,'coordinates':coordinates}})
+              if pos % 5000 == 0:
+                  print(f'{pos:,}/{len(ids):,} object IDs; {len(features):,} geometries', flush=True)
+
+          fc = {'type':'FeatureCollection','name':'HIFLD US Electric Power Transmission Lines — complete public snapshot',
+                'source_url':base,'retrieved_at':'2026-09-08','features':features}
+          geo = out / 'HIFLD_US_Electric_Power_Transmission_Lines_complete_2026-09-08.geojson'
+          geo.write_text(json.dumps(fc, ensure_ascii=False, separators=(',',':')), encoding='utf-8')
+          digest = hashlib.sha256(geo.read_bytes()).hexdigest()
+          manifest = {
+              'source_url': base,
+              'retrieved_at': '2026-09-08',
+              'reported_object_ids': len(ids),
+              'geometry_features_written': len(features),
+              'object_id_field': meta.get('objectIdField'),
+              'service_name': meta.get('name'),
+              'service_description': meta.get('description'),
+              'copyright_text': meta.get('copyrightText'),
+              'spatial_reference_requested': 4326,
+              'sha256': digest,
+              'completeness_gate': len(features) == len(ids),
+              'license_basis': 'U.S. government public data; upstream metadata and applicable terms control',
+          }
+          if not manifest['completeness_gate']:
+              raise SystemExit(f'Completeness gate failed: {manifest}')
+          (out/'HIFLD_SOURCE_SNAPSHOT.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          with zipfile.ZipFile('gold-hifld-complete.zip','w',zipfile.ZIP_DEFLATED,compresslevel=7,allowZip64=True) as z:
+              z.write(geo, geo.name)
+              z.write(out/'HIFLD_SOURCE_SNAPSHOT.json','HIFLD_SOURCE_SNAPSHOT.json')
+          with zipfile.ZipFile('gold-hifld-complete.zip') as z:
+              bad=z.testzip()
+              if bad: raise RuntimeError(bad)
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload complete HIFLD snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-full-hifld-transmission-2026-09-08
+          path: gold-hifld-complete.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
