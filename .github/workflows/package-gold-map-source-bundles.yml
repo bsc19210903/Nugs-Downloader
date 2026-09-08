@@ -1,0 +1,219 @@
+name: Package gold map source bundles
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/package-gold-map-source-bundles.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out workflow repository
+        uses: actions/checkout@v4
+
+      - name: Check out current OFDS public data
+        uses: actions/checkout@v4
+        with:
+          repository: Open-Telecoms-Data/OFDS-public-data
+          ref: main
+          path: sources/ofds
+          fetch-depth: 1
+
+      - name: Check out current global power-line extracts
+        uses: actions/checkout@v4
+        with:
+          repository: lyralai/global-power-lines
+          ref: master
+          path: sources/power
+          fetch-depth: 1
+          sparse-checkout: |
+            geojson
+            README.md
+            LICENSE
+          sparse-checkout-cone-mode: true
+
+      - name: Build deterministic source packages
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import csv, hashlib, json, shutil, subprocess, zipfile
+          from pathlib import Path
+
+          root = Path.cwd()
+          ofds = root / 'sources/ofds'
+          power = root / 'sources/power'
+          out = root / 'gold-source-bundles'
+          stage = root / 'gold-source-stage'
+          out.mkdir(exist_ok=True)
+          stage.mkdir(exist_ok=True)
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for block in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          def git_sha(repo: Path) -> str:
+              return subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+
+          def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+              fields: list[str] = []
+              for row in rows:
+                  for k in row:
+                      if k not in fields:
+                          fields.append(k)
+              with path.open('w', newline='', encoding='utf-8-sig') as f:
+                  w = csv.DictWriter(f, fieldnames=fields)
+                  w.writeheader(); w.writerows(rows)
+
+          # OFDS: preserve all structured spans/nodes plus source README and visual evidence.
+          ofds_stage = stage / 'ofds'
+          ofds_rows: list[dict[str, object]] = []
+          keep_suffixes = {'.geojson', '.json', '.md', '.png', '.jpg', '.jpeg', '.webp', '.xlsx'}
+          for path in sorted(ofds.rglob('*')):
+              if not path.is_file() or '.git' in path.parts:
+                  continue
+              rel = path.relative_to(ofds)
+              name = path.name.lower()
+              structured = ('_ofds-spans_' in name or '_ofds-nodes_' in name or '_ofds-json_' in name)
+              supporting = path.suffix.lower() in keep_suffixes and (path.name == 'README.md' or not path.name.startswith('.'))
+              if not (structured or supporting):
+                  continue
+              dst = ofds_stage / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(path, dst)
+              parts = rel.parts
+              country = parts[0] if len(parts) > 1 else ''
+              operator = parts[1] if len(parts) > 2 else ''
+              kind = 'spans' if '_ofds-spans_' in name else 'nodes' if '_ofds-nodes_' in name else 'ofds-json' if '_ofds-json_' in name else 'readme' if path.name == 'README.md' else 'source-image-or-workbook'
+              ofds_rows.append({
+                  'repository_commit': git_sha(ofds), 'path': rel.as_posix(),
+                  'country': country, 'operator': operator, 'kind': kind,
+                  'size_bytes': path.stat().st_size, 'sha256': sha256(path),
+              })
+          write_csv(ofds_stage / 'OFDS_SOURCE_FILE_MANIFEST.csv', ofds_rows)
+          (ofds_stage / 'SOURCE_SNAPSHOT.json').write_text(json.dumps({
+              'repository': 'Open-Telecoms-Data/OFDS-public-data',
+              'commit': git_sha(ofds),
+              'span_files': sum(r['kind'] == 'spans' for r in ofds_rows),
+              'node_files': sum(r['kind'] == 'nodes' for r in ofds_rows),
+              'files_total': len(ofds_rows),
+          }, indent=2), encoding='utf-8')
+          with zipfile.ZipFile(out / 'gold-source-ofds-current.zip', 'w', zipfile.ZIP_DEFLATED, compresslevel=7, allowZip64=True) as z:
+              for p in sorted(ofds_stage.rglob('*')):
+                  if p.is_file(): z.write(p, p.relative_to(ofds_stage).as_posix())
+
+          # OSM power=minor_line extracts, alphabetically partitioned to stay downloadable.
+          groups = {
+              'A-F': set('ABCDEF'), 'G-M': set('GHIJKLM'),
+              'N-S': set('NOPQRS'), 'T-Z': set('TUVWXYZ'),
+          }
+          power_commit = git_sha(power)
+          all_rows: list[dict[str, object]] = []
+          for group, initials in groups.items():
+              group_stage = stage / f'power-minor-{group.lower()}'
+              rows: list[dict[str, object]] = []
+              for path in sorted((power / 'geojson').glob('*/power_minor_lines_*.geojson')):
+                  iso = path.parent.name.upper()
+                  if not iso or iso[0] not in initials:
+                      continue
+                  rel = path.relative_to(power)
+                  dst = group_stage / rel
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, dst)
+                  row = {
+                      'repository_commit': power_commit, 'path': rel.as_posix(),
+                      'country_iso': iso, 'kind': 'OSM power=minor_line',
+                      'size_bytes': path.stat().st_size, 'sha256': sha256(path),
+                      'license': 'ODbL 1.0 / © OpenStreetMap contributors',
+                  }
+                  rows.append(row); all_rows.append(row)
+              if rows:
+                  for extra in ('README.md', 'LICENSE'):
+                      src = power / extra
+                      if src.exists(): shutil.copy2(src, group_stage / extra)
+                  write_csv(group_stage / 'POWER_MINOR_LINE_SOURCE_MANIFEST.csv', rows)
+                  with zipfile.ZipFile(out / f'gold-source-power-minor-{group.lower()}.zip', 'w', zipfile.ZIP_DEFLATED, compresslevel=7, allowZip64=True) as z:
+                      for p in sorted(group_stage.rglob('*')):
+                          if p.is_file(): z.write(p, p.relative_to(group_stage).as_posix())
+          write_csv(out / 'POWER_MINOR_LINE_ALL_FILES_MANIFEST.csv', all_rows)
+          (out / 'SOURCE_SNAPSHOT.json').write_text(json.dumps({
+              'ofds_repository_commit': git_sha(ofds),
+              'power_repository_commit': power_commit,
+              'power_minor_country_files': len(all_rows),
+              'ofds_files': len(ofds_rows),
+          }, indent=2), encoding='utf-8')
+
+          # Integrity check every generated ZIP.
+          for path in sorted(out.glob('*.zip')):
+              with zipfile.ZipFile(path) as z:
+                  bad = z.testzip()
+                  if bad: raise RuntimeError(f'{path.name}: corrupt member {bad}')
+              print(f'{path.stat().st_size:12d} {path.name}')
+          PY
+
+      - name: Upload current OFDS structured and raster-evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-ofds-current
+          path: gold-source-bundles/gold-source-ofds-current.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload power minor-line A-F bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-power-minor-a-f
+          path: gold-source-bundles/gold-source-power-minor-a-f.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload power minor-line G-M bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-power-minor-g-m
+          path: gold-source-bundles/gold-source-power-minor-g-m.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload power minor-line N-S bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-power-minor-n-s
+          path: gold-source-bundles/gold-source-power-minor-n-s.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload power minor-line T-Z bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-power-minor-t-z
+          path: gold-source-bundles/gold-source-power-minor-t-z.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload aggregate source snapshot metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-snapshot-metadata
+          path: |
+            gold-source-bundles/POWER_MINOR_LINE_ALL_FILES_MANIFEST.csv
+            gold-source-bundles/SOURCE_SNAPSHOT.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
