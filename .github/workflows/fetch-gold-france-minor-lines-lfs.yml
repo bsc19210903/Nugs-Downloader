@@ -1,0 +1,72 @@
+name: Fetch gold France distribution LFS source
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/fetch-gold-france-minor-lines-lfs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out France distribution source with Git LFS
+        uses: actions/checkout@v4
+        with:
+          repository: lyralai/global-power-lines
+          ref: master
+          path: source
+          fetch-depth: 1
+          lfs: true
+          sparse-checkout: |
+            geojson/FR
+            README.md
+            LICENSE
+          sparse-checkout-cone-mode: true
+
+      - name: Verify and package actual GeoJSON
+        run: |
+          set -euo pipefail
+          FILE=source/geojson/FR/power_minor_lines_fr.geojson
+          test -s "$FILE"
+          if head -1 "$FILE" | grep -q 'git-lfs.github.com'; then
+            echo 'Git LFS pointer remained after checkout' >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import hashlib, json, pathlib, zipfile
+          p=pathlib.Path('source/geojson/FR/power_minor_lines_fr.geojson')
+          data=json.loads(p.read_text(encoding='utf-8'))
+          count=len(data.get('features') or [])
+          if count == 0:
+              raise SystemExit('France source contains no features')
+          meta={'country_iso':'FR','features':count,'size_bytes':p.stat().st_size,
+                'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+                'license':'ODbL 1.0 / © OpenStreetMap contributors',
+                'repository':'lyralai/global-power-lines','ref':'master'}
+          pathlib.Path('FRANCE_MINOR_LINE_SOURCE.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          with zipfile.ZipFile('gold-source-power-minor-france-lfs.zip','w',zipfile.ZIP_DEFLATED,compresslevel=7,allowZip64=True) as z:
+              z.write(p,'geojson/FR/power_minor_lines_fr.geojson')
+              z.write('source/README.md','README.md')
+              z.write('source/LICENSE','LICENSE')
+              z.write('FRANCE_MINOR_LINE_SOURCE.json','FRANCE_MINOR_LINE_SOURCE.json')
+          with zipfile.ZipFile('gold-source-power-minor-france-lfs.zip') as z:
+              bad=z.testzip()
+              if bad: raise RuntimeError(bad)
+          print(json.dumps(meta,indent=2))
+          PY
+
+      - name: Upload verified France source
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-source-power-minor-france-lfs
+          path: gold-source-power-minor-france-lfs.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
