@@ -1,0 +1,64 @@
+name: Fetch gold public operator map sources
+
+on:
+  push:
+    branches:
+      - build/global-infrastructure-v2-20260828
+    paths:
+      - ".github/workflows/fetch-gold-operator-sources-20260908.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download public operator map files
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p operator-sources
+          cat > operator-sources/source_urls.txt <<'EOF'
+          Viaero Fiber|https://viaerofiber.com/hubfs/vfn_routes_12Feb2026.kml?hsLang=en|viaero_fiber_2026-02-12.kml
+          Bluebird Fiber|https://bluebirdfiber.com/wp-content/uploads/2026/03/BBF-Public-Network-Q12026.kmz_.zip|bluebird_fiber_q1_2026.zip
+          Cogent on-net sites|https://www.dropbox.com/scl/fi/7fz55zbs6oh5yxmhha76i/Cogent-On-Net-CNDC-CDC-Hubsites-USA.kmz?rlkey=ilm38cj6gcrhcm08bvylapbr7&dl=1|cogent_onnet_sites.kmz
+          Zayo metro and longhaul|https://www.dropbox.com/scl/fi/1z2ly1dcxh0zwwu1uw26i/Zayo-Metro-and-Longhaul-Fiber-Map.kmz?rlkey=32gwiq7gqg8wwpjbkw4bsq79r&dl=1|zayo_metro_longhaul_current.kmz
+          EOF
+          printf 'operator,url,filename,http_code,size_bytes,sha256,validation,status\n' > operator-sources/download_manifest.csv
+          while IFS='|' read -r operator url filename; do
+            echo "Fetching $operator"
+            code=$(curl -L --retry 5 --retry-all-errors --connect-timeout 20 --max-time 600 -A 'Mozilla/5.0' -w '%{http_code}' -o "operator-sources/$filename.part" "$url" 2>"operator-sources/$filename.curl.log" || true)
+            size=0; sha=''; validation=''; status='failed'
+            if [ -f "operator-sources/$filename.part" ]; then size=$(stat -c%s "operator-sources/$filename.part"); fi
+            if [ "$code" = "200" ] && [ "$size" -gt 100 ]; then
+              mv "operator-sources/$filename.part" "operator-sources/$filename"
+              sha=$(sha256sum "operator-sources/$filename" | awk '{print $1}')
+              case "$filename" in
+                *.kmz|*.zip)
+                  if unzip -t "operator-sources/$filename" >"operator-sources/$filename.unzip.log" 2>&1; then validation='zip-ok'; status='downloaded'; else validation='zip-invalid'; status='invalid'; fi
+                  ;;
+                *.kml)
+                  if python - <<PY
+from lxml import etree
+etree.parse('operator-sources/$filename', etree.XMLParser(huge_tree=True, recover=False))
+PY
+                  then validation='xml-ok'; status='downloaded'; else validation='xml-invalid'; status='invalid'; fi
+                  ;;
+              esac
+            fi
+            printf '"%s","%s","%s","%s","%s","%s","%s","%s"\n' "$operator" "$url" "$filename" "$code" "$size" "$sha" "$validation" "$status" >> operator-sources/download_manifest.csv
+          done < operator-sources/source_urls.txt
+          cat operator-sources/download_manifest.csv
+          find operator-sources -maxdepth 1 -type f -printf '%12s  %f\n' | sort -n
+      - name: Upload public operator sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-public-operator-sources-2026-09-08
+          path: operator-sources/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
