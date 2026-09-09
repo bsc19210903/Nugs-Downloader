@@ -1,0 +1,65 @@
+name: Pursue top-100 fiber owner public sources
+
+on:
+  push:
+    branches:
+      - research/top100-fiber-completeness-20260909
+    paths:
+      - "research/top100-fiber-completeness/**"
+      - ".github/workflows/top100-fiber-source-pursuit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pursue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      PYTHONUNBUFFERED: "1"
+      TOP100_OUT: dist/top100-fiber-pursuit
+      TOP100_TARGETS: top100_owners.tsv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install discovery dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests beautifulsoup4 urllib3
+      - name: Reconstruct source-pursuit payload
+        run: |
+          set -euo pipefail
+          cat research/top100-fiber-completeness/payload.b64.part* \
+            | base64 --decode > /tmp/top100_payload.tgz
+          tar -xzf /tmp/top100_payload.tgz
+          python -m py_compile top100_source_discovery.py
+          test "$(wc -l < top100_owners.tsv)" -eq 100
+      - name: Search and inspect public operator sources
+        run: python top100_source_discovery.py
+      - name: Verify outputs
+        run: |
+          set -euo pipefail
+          test -s dist/top100-fiber-pursuit/top100_operator_discovery_summary.csv
+          test -s dist/top100-fiber-pursuit/top100_source_candidates.csv
+          test -s dist/top100-fiber-pursuit/top100_length_claim_candidates.csv
+          test -s dist/top100-fiber-pursuit/top100_arcgis_candidates.csv
+          test -s dist/top100-fiber-pursuit/top100_discovery_summary.json
+          python - <<'PY'
+          import csv, json, pathlib
+          p=pathlib.Path('dist/top100-fiber-pursuit')
+          rows=list(csv.DictReader((p/'top100_operator_discovery_summary.csv').open(encoding='utf-8-sig')))
+          assert len(rows)==100, len(rows)
+          print(json.dumps(json.loads((p/'top100_discovery_summary.json').read_text()),indent=2))
+          PY
+      - name: Upload source-pursuit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: top100-fiber-source-pursuit-2026-09-09
+          path: dist/top100-fiber-pursuit/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
