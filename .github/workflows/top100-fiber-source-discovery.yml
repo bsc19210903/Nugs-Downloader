@@ -1,0 +1,76 @@
+name: Top 100 fiber owner public-source discovery
+
+on:
+  push:
+    branches:
+      - research/top100-fiber-completeness-20260909
+    paths:
+      - "tools/top100_fiber/**"
+      - ".github/workflows/top100-fiber-source-discovery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PYTHONUNBUFFERED: "1"
+      TOP100_OUT: dist/top100-fiber-completeness
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out research branch
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Reconstruct crawler
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools/top100_fiber
+          base64 --decode tools/top100_fiber/top100_public_source_discovery.py.gz.b64 \
+            | gzip --decompress --stdout \
+            > tools/top100_fiber/top100_public_source_discovery.py
+          python -m py_compile tools/top100_fiber/top100_public_source_discovery.py
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests beautifulsoup4 urllib3
+
+      - name: Search public web, ArcGIS, and GitHub
+        run: python tools/top100_fiber/top100_public_source_discovery.py
+
+      - name: Validate output
+        run: |
+          set -euo pipefail
+          test -s "$TOP100_OUT/top100_operator_discovery_summary.csv"
+          test -s "$TOP100_OUT/top100_source_candidates.csv"
+          test -s "$TOP100_OUT/top100_targets.json"
+          test -s "$TOP100_OUT/top100_discovery_summary.json"
+          python - <<'PY'
+          import csv, json, os, pathlib
+          out = pathlib.Path(os.environ['TOP100_OUT'])
+          with (out/'top100_operator_discovery_summary.csv').open(encoding='utf-8-sig') as f:
+              rows=list(csv.DictReader(f))
+          assert len(rows)==100, len(rows)
+          summary=json.loads((out/'top100_discovery_summary.json').read_text())
+          print(json.dumps(summary, indent=2))
+          PY
+          find "$TOP100_OUT" -maxdepth 1 -type f -printf '%12s  %f\n' | sort -n
+
+      - name: Upload discovery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: top100-fiber-owner-public-source-discovery-2026-09-09
+          path: dist/top100-fiber-completeness/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
